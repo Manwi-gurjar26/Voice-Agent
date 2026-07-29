@@ -524,3 +524,97 @@ response, not an auth or code error). The full `synthesize_speech` →
 account — the same "state what was and wasn't verified" disclosure as Step
 6's browser-automation gap, not a claim that this was fully exercised
 end-to-end against live providers.
+
+## Dashboard (Step 8)
+
+A Next.js app for signing up, logging in, and managing agents — the first
+thing to actually consume the "Dashboard API" that's existed since Step 2.
+
+```powershell
+cd dashboard
+npm install
+npm run dev        # http://localhost:3000
+npm run build
+npm test            # vitest run
+npx tsc --noEmit
+npm run lint
+```
+
+**Client-side, calling FastAPI directly — not a BFF.** The backend already
+had `DASHBOARD_CORS_ORIGINS` middleware set up specifically for a browser to
+call it directly, and sets no cookies anywhere (`/auth/*` returns
+`{access_token, refresh_token}` in a JSON body, full stop). Building a
+Next.js proxy layer with httpOnly cookies would have been more secure
+against XSS, but would leave that existing CORS support unused and add a
+server-to-server networking layer the backend wasn't designed around.
+Instead: tokens live in `localStorage` (`lib/auth-storage.ts`, mirroring
+`widget/src/storage.ts`'s try/catch-everywhere shape), and `lib/api.ts` calls
+the FastAPI backend directly from the browser. The tradeoff — tokens are
+readable by any injected script — is deliberate and documented, not an
+oversight.
+
+**One retry-on-401 layer, not one per call site.** The widget only ever
+needed session-refresh-and-retry in a single place (`useChat.sendMessage`).
+The dashboard has eight authenticated endpoints across five pages, so
+`lib/api.ts`'s `authedRequest` centralizes it instead: a local-expiry
+precheck before the request (mirroring the widget's pre-check in
+`storage.ts`), and a reactive refresh-and-retry-once on an actual 401 from
+the server. Every page calls plain functions (`listAgents()`, `createAgent()`,
+...) with no knowledge that a refresh can happen underneath.
+
+**Route protection is client-side only.** Since there's no cookie for
+Next.js middleware/proxy to read on the server, `app/(dashboard)/layout.tsx`
+redirects to `/login` client-side based on `AuthProvider`'s bootstrapped
+state, and `app/(auth)/layout.tsx` redirects an already-authenticated visitor
+away from `/login`/`/signup`. An unauthenticated visitor briefly sees a
+loading state before the redirect fires, rather than the protected page's
+content — a direct consequence of the localStorage decision above, not a gap
+in this step.
+
+**Forms are hand-rolled with `react-hook-form` + `zod`, not shadcn's `Form`
+wrapper.** The installed `shadcn` CLI version (`style: "base-nova"`, built on
+`@base-ui/react` rather than Radix) postdates this project's knowledge base
+enough that `npx shadcn add form` silently installed nothing, and its actual
+current shape couldn't be verified. Rather than depend on an opaque
+component, every form uses `useForm`/`Controller` directly against the
+existing `Input`/`Select`/`Switch`/`Textarea` primitives — plain, verifiable
+code instead of a black box. (Relatedly: this shadcn version's `Button`
+doesn't support Radix-style `asChild` — it uses a `render` prop instead,
+e.g. `<Button render={<Link href="..." />}>Label</Button>`.)
+
+**The signup password policy isn't duplicated client-side.** `backend/app/schemas/auth.py`
+owns the real policy (minimum length, mixed character classes); the signup
+form only checks that a password was entered at all, and surfaces the
+backend's actual `validation_error` message on failure via
+`formatApiError()` (which unwraps `details.fields[].msg` — the generic
+envelope message is just "The request payload is invalid.") rather than
+reimplementing the policy and risking drift.
+
+**Agent create vs. edit share one form, not two.** `AgentCreate` has no
+`status` or `rate_limit_per_minute` field (every agent starts as `draft` at
+`rate_limit_per_minute=30` server-side); `AgentUpdate` has both.
+`components/agent-form.tsx` renders one shared field set plus those two
+extra fields only in edit mode, converting to the right payload shape via
+`formValuesToCreate`/`formValuesToUpdate` — one ~250-line component instead
+of two 90%-identical ones.
+
+**Testing.** Vitest + React Testing Library (matching the widget's stack).
+47 tests: `lib/auth-storage.ts` (mirrors `storage.test.ts`, including the
+storage-throws case), `lib/api.ts` (one test per endpoint, the
+proactive-refresh and reactive-refresh-retry-once paths, error-envelope
+parsing), `lib/auth-context.tsx` (bootstrap, login, signup, logout, a
+stored-but-no-longer-valid session clearing itself), and page-level tests
+for login, signup, the agent list (including the delete-confirm dialog), and
+agent create/edit (including one-per-line origin parsing and the
+create/update field-set difference above) — all against a mocked `lib/api`,
+not a real backend.
+
+**Live verification.** Real backend, real Postgres, real dashboard dev
+server: signup, `/auth/me`, agent create (both with and without optional
+fields, confirming server-side defaults apply when they're omitted), list,
+update (status + rate limit), token refresh, delete, and both the CORS
+preflight and the actual response headers for a cross-origin request from
+`http://localhost:3000` — all via `curl` replicating the exact request
+shapes `lib/api.ts` sends, the same rigor as Steps 6-7. Real click-through
+browser testing isn't automatable here (no Playwright/Puppeteer, disclosed
+since Step 6); the RTL component tests above cover that ground instead.
