@@ -5,6 +5,7 @@ import type {
   ConversationRead,
   MessageRead,
   SseEvent,
+  VoiceReplyResponse,
   WidgetSessionResponse,
 } from "./types";
 
@@ -35,6 +36,12 @@ export interface ApiClient {
   createConversation(sessionToken: string): Promise<ConversationRead>;
   listMessages(sessionToken: string, conversationId: string): Promise<MessageRead[]>;
   sendMessage(sessionToken: string, conversationId: string, content: string): AsyncGenerator<SseEvent>;
+  sendVoiceMessage(
+    sessionToken: string,
+    conversationId: string,
+    audio: Blob,
+    filename: string,
+  ): Promise<VoiceReplyResponse>;
 }
 
 /** One client per mounted widget instance, bound to one agent's public_key. */
@@ -105,6 +112,26 @@ export function createApiClient(baseUrl: string, publicKey: string): ApiClient {
     yield* parseSseStream(res);
   }
 
+  async function sendVoiceMessage(
+    sessionToken: string,
+    conversationId: string,
+    audio: Blob,
+    filename: string,
+  ): Promise<VoiceReplyResponse> {
+    const form = new FormData();
+    form.append("file", audio, filename);
+    const res = await fetch(`${base}/public/conversations/${conversationId}/voice-messages`, {
+      method: "POST",
+      // No explicit Content-Type: the browser sets the multipart boundary
+      // itself when the body is a FormData instance.
+      headers: authHeaders(sessionToken),
+      credentials: "omit",
+      body: form,
+    });
+    if (!res.ok) throw await errorFromResponse(res);
+    return (await res.json()) as VoiceReplyResponse;
+  }
+
   return {
     getConfig,
     createSession,
@@ -112,5 +139,6 @@ export function createApiClient(baseUrl: string, publicKey: string): ApiClient {
     createConversation,
     listMessages,
     sendMessage,
+    sendVoiceMessage,
   };
 }

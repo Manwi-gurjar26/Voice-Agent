@@ -78,6 +78,15 @@ class _FakeMessageStream:
     async def get_final_message(self) -> _FakeFinalMessage:
         return _FakeFinalMessage("".join(self._chunks), self._stop_reason, self._usage)
 
+    async def create(self) -> _FakeFinalMessage:
+        """Mirrors the non-streaming client.messages.create() path used by
+        chat_service.complete_turn (Step 7) — unlike get_final_message, this
+        raises `error` directly, since there's no text_stream iteration to
+        raise it for a caller that never streams."""
+        if self._error is not None:
+            raise self._error
+        return _FakeFinalMessage("".join(self._chunks), self._stop_reason, self._usage)
+
 
 class _FakeMessagesResource:
     def __init__(self, factory) -> None:
@@ -87,6 +96,10 @@ class _FakeMessagesResource:
     def stream(self, **kwargs):
         self.last_kwargs = kwargs
         return self._factory(**kwargs)
+
+    async def create(self, **kwargs) -> _FakeFinalMessage:
+        self.last_kwargs = kwargs
+        return await self._factory(**kwargs).create()
 
 
 class FakeAnthropicClient:

@@ -40,6 +40,14 @@ export interface MessageRead {
   created_at: string;
 }
 
+// --- Voice (Step 7) ---
+export interface VoiceReplyResponse {
+  transcript: string;
+  message: MessageRead;
+  audio_base64: string;
+  audio_mime: string;
+}
+
 export interface ApiErrorBody {
   error: {
     code: string;

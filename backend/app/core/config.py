@@ -80,6 +80,16 @@ class Settings(BaseSettings):
     url_fetch_timeout_seconds: float = 10.0
     max_url_response_bytes: int = 5 * 1024 * 1024
 
+    # --- Voice (Step 7) ---
+    # Turn-based STT/TTS via OpenAI — separate provider/key from the Claude
+    # LLM above. voice_enabled is per-agent (see Agent model); this key is
+    # only required for tenants that actually turn it on.
+    openai_api_key: str | None = None
+    voice_stt_model: str = "whisper-1"
+    voice_tts_model: str = "tts-1"
+    voice_default_voice: str = "alloy"
+    max_voice_upload_bytes: int = 10 * 1024 * 1024
+
     @field_validator("dashboard_cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:

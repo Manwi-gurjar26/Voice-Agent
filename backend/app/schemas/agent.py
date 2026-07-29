@@ -12,6 +12,29 @@ from app.models.enums import AgentStatus, EffortLevel
 
 MAX_ORIGINS = 50
 
+# OpenAI's fixed TTS voice names (see app/services/voice.py). Validated here,
+# at the boundary, so a bad voice_id surfaces as a normal 422 on agent
+# create/update instead of a runtime TTS API error the next time someone
+# speaks to the widget.
+ALLOWED_VOICE_IDS = {
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "sage",
+    "shimmer",
+    "verse",
+    "marin",
+    "cedar",
+}
+
+
+def _validate_voice_id(value: str | None) -> str | None:
+    if value is not None and value not in ALLOWED_VOICE_IDS:
+        raise ValueError(f"voice_id must be one of {sorted(ALLOWED_VOICE_IDS)}: {value!r}")
+    return value
+
 
 def _normalise_origins(value: list[str]) -> list[str]:
     """Normalise, validate, and de-duplicate an origin allowlist.
@@ -57,6 +80,11 @@ class AgentCreate(BaseModel):
     def _origins(cls, value: list[str]) -> list[str]:
         return _normalise_origins(value)
 
+    @field_validator("voice_id")
+    @classmethod
+    def _voice_id(cls, value: str | None) -> str | None:
+        return _validate_voice_id(value)
+
 
 class AgentUpdate(BaseModel):
     """Every field optional — this is a PATCH body.
@@ -83,6 +111,11 @@ class AgentUpdate(BaseModel):
     @classmethod
     def _origins(cls, value: list[str] | None) -> list[str] | None:
         return None if value is None else _normalise_origins(value)
+
+    @field_validator("voice_id")
+    @classmethod
+    def _voice_id(cls, value: str | None) -> str | None:
+        return _validate_voice_id(value)
 
 
 class AgentRead(BaseModel):

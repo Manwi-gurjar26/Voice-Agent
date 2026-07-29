@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.errors import NotFoundError, QuotaExceededError
+from app.core.errors import AppError, NotFoundError, QuotaExceededError
 from app.models import Agent, Chunk, Conversation, Message
 from app.models.widget_session import WidgetSession
 from app.services import embeddings, llm
@@ -123,13 +123,13 @@ def _citations_from_chunks(chunks: list[Chunk]) -> list[dict] | None:
     return list(seen.values())
 
 
-async def stream_turn(
+async def _prepare_turn(
     db: AsyncSession, conversation: Conversation, agent: Agent, user_content: str
-) -> AsyncIterator[str]:
-    """Persist the user message, enforce quota, call Claude, and stream SSE.
-
-    Yields SSE-formatted (`event: ...\\ndata: ...\\n\\n`) chunks — pass this
-    directly to `StreamingResponse(..., media_type="text/event-stream")`.
+) -> tuple[str, list[dict], list[Chunk]]:
+    """Shared prep for both stream_turn and complete_turn: enforce quota,
+    persist the user message, run retrieval, and build the Claude message
+    list. Raises QuotaExceededError (already rolled back) on quota failure —
+    callers decide how to surface that (an SSE event vs a JSON error).
 
     Quota is consumed *before* calling Claude, unconditionally, with no
     refund if the call then fails. That's a deliberate cost-control choice,
@@ -140,10 +140,9 @@ async def stream_turn(
     """
     try:
         await check_and_consume_quota(db, conversation.tenant_id)
-    except QuotaExceededError as exc:
+    except QuotaExceededError:
         await db.rollback()
-        yield _sse("error", {"code": exc.code, "message": exc.message})
-        return
+        raise
 
     user_message = Message(conversation_id=conversation.id, role="user", content=user_content)
     db.add(user_message)
@@ -173,6 +172,24 @@ async def stream_turn(
 
     history = await list_messages(db, conversation)
     claude_messages = _build_claude_messages(history)
+    return system_prompt, claude_messages, relevant_chunks
+
+
+async def stream_turn(
+    db: AsyncSession, conversation: Conversation, agent: Agent, user_content: str
+) -> AsyncIterator[str]:
+    """Persist the user message, enforce quota, call Claude, and stream SSE.
+
+    Yields SSE-formatted (`event: ...\\ndata: ...\\n\\n`) chunks — pass this
+    directly to `StreamingResponse(..., media_type="text/event-stream")`.
+    """
+    try:
+        system_prompt, claude_messages, relevant_chunks = await _prepare_turn(
+            db, conversation, agent, user_content
+        )
+    except QuotaExceededError as exc:
+        yield _sse("error", {"code": exc.code, "message": exc.message})
+        return
 
     accumulated = ""
     try:
@@ -224,3 +241,54 @@ async def stream_turn(
             "citations": citations or [],
         },
     )
+
+
+async def complete_turn(
+    db: AsyncSession, conversation: Conversation, agent: Agent, user_content: str
+) -> Message:
+    """Non-streaming twin of stream_turn, used by the voice endpoint (Step 7):
+    a spoken turn needs the full reply text before TTS can run, so there is
+    nothing to stream to the caller. Raises AppError on quota/LLM failure
+    instead of yielding an SSE error event — this returns a normal JSON
+    response, not a stream.
+    """
+    try:
+        system_prompt, claude_messages, relevant_chunks = await _prepare_turn(
+            db, conversation, agent, user_content
+        )
+    except QuotaExceededError as exc:
+        raise AppError(exc.message, code=exc.code, status_code=exc.status_code) from exc
+
+    try:
+        client = llm.get_anthropic_client()
+        final = await client.messages.create(
+            model=agent.model,
+            max_tokens=agent.max_output_tokens,
+            system=system_prompt,
+            messages=claude_messages,
+            output_config={"effort": agent.effort},
+        )
+    except Exception as exc:
+        logger.exception("Claude call failed for conversation %s", conversation.id)
+        raise AppError(
+            "The assistant is temporarily unavailable. Please try again.",
+            code="llm_error",
+            status_code=502,
+        ) from exc
+
+    accumulated = "".join(
+        block.text for block in final.content if getattr(block, "type", None) == "text"
+    )
+    citations = _citations_from_chunks(relevant_chunks)
+    assistant_message = Message(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=accumulated,
+        input_tokens=final.usage.input_tokens,
+        output_tokens=final.usage.output_tokens,
+        citations=citations,
+    )
+    db.add(assistant_message)
+    conversation.last_message_at = datetime.now(timezone.utc)
+    await db.commit()
+    return assistant_message

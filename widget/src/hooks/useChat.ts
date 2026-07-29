@@ -12,6 +12,7 @@ export interface ChatState {
   isSending: boolean;
   errorBanner: string | null;
   sendMessage: (content: string) => void;
+  sendVoiceMessage: (audioBlob: Blob, filename: string) => Promise<{ audioUrl: string } | void>;
 }
 
 const AUTH_ERROR_CODES = new Set(["unauthenticated", "session_expired"]);
@@ -29,6 +30,15 @@ function friendlyErrorMessage(code: string): string {
     default:
       return "Something went wrong. Please try again.";
   }
+}
+
+/** Decodes a base64 audio payload (see VoiceReplyResponse) into a playable
+ * object URL. Callers are responsible for revoking it once played. */
+function decodeAudioToUrl(base64: string, mime: string): string {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes], { type: mime }));
 }
 
 export function useChat(api: ApiClient, publicKey: string): ChatState {
@@ -124,6 +134,36 @@ export function useChat(api: ApiClient, publicKey: string): ChatState {
     // deliberately left out of the dependency array.
   }, [publicKey]);
 
+  /** Runs `action`, and on a mid-visit session-expiry error (the 60-minute
+   * widget session is real for anyone keeping a tab open), transparently
+   * refreshes the session and retries exactly once — most visitors should
+   * never see "please refresh the page" just because they were reading for a
+   * while before interacting. Shared between text and voice sends, since the
+   * retry logic is identical for both. */
+  async function withSessionRetry(
+    action: () => Promise<void>,
+    onFailure: (err: unknown) => void,
+  ): Promise<void> {
+    try {
+      await action();
+    } catch (err) {
+      if (err instanceof ApiError && AUTH_ERROR_CODES.has(err.code)) {
+        storage.clearSession(publicKey);
+        conversationIdRef.current = null;
+        try {
+          const session = await api.createSession();
+          storage.storeSession(publicKey, session.session_token, session.expires_in);
+          sessionTokenRef.current = session.session_token;
+          await action();
+        } catch (retryErr) {
+          onFailure(retryErr);
+        }
+      } else {
+        onFailure(err);
+      }
+    }
+  }
+
   async function sendMessage(content: string): Promise<void> {
     const trimmed = content.trim();
     if (!trimmed || isSending || status !== "ready" || !sessionTokenRef.current) return;
@@ -142,29 +182,73 @@ export function useChat(api: ApiClient, publicKey: string): ChatState {
       setMessages((prev) => prev.map((m) => (m.id === assistantMessageId ? { ...m, ...patch } : m)));
 
     try {
-      await attemptSend(trimmed, updateAssistant);
-    } catch (err) {
-      if (err instanceof ApiError && AUTH_ERROR_CODES.has(err.code)) {
-        // The session died mid-visit (60-minute expiry is real for anyone
-        // keeping a tab open). Refresh it transparently and retry exactly
-        // once — most visitors should never see "please refresh the page"
-        // just because they were reading for a while before typing.
-        storage.clearSession(publicKey);
-        conversationIdRef.current = null;
-        try {
-          const session = await api.createSession();
-          storage.storeSession(publicKey, session.session_token, session.expires_in);
-          sessionTokenRef.current = session.session_token;
-          await attemptSend(trimmed, updateAssistant);
-        } catch (retryErr) {
-          handleSendFailure(retryErr, updateAssistant);
-        }
-      } else {
-        handleSendFailure(err, updateAssistant);
-      }
+      await withSessionRetry(
+        () => attemptSend(trimmed, updateAssistant),
+        (err) => handleSendFailure(err, updateAssistant),
+      );
     } finally {
       setIsSending(false);
     }
+  }
+
+  async function sendVoiceMessage(
+    audioBlob: Blob,
+    filename: string,
+  ): Promise<{ audioUrl: string } | void> {
+    if (isSending || status !== "ready" || !sessionTokenRef.current) return;
+
+    setErrorBanner(null);
+    setIsSending(true);
+
+    // Unlike sendMessage, nothing is appended optimistically — a voice turn
+    // is one request/response (no deltas to stream into a placeholder), so
+    // both bubbles are added together once the transcript and reply exist.
+    let result: { audioUrl: string } | undefined;
+
+    async function attemptVoiceSend(): Promise<void> {
+      const token = sessionTokenRef.current;
+      if (!token) throw new ApiError(401, "unauthenticated", "No session token.");
+
+      let conversationId = conversationIdRef.current;
+      if (!conversationId) {
+        const conversation = await api.createConversation(token);
+        conversationId = conversation.id;
+        conversationIdRef.current = conversationId;
+        storage.storeConversationId(publicKey, conversationId);
+      }
+
+      const reply = await api.sendVoiceMessage(token, conversationId, audioBlob, filename);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `local-user-${Date.now()}`,
+          role: "user",
+          content: reply.transcript,
+          citations: null,
+          status: "complete",
+        },
+        {
+          id: reply.message.id,
+          role: "assistant",
+          content: reply.message.content,
+          citations: reply.message.citations,
+          status: "complete",
+        },
+      ]);
+      result = reply.audio_base64
+        ? { audioUrl: decodeAudioToUrl(reply.audio_base64, reply.audio_mime) }
+        : undefined;
+    }
+
+    try {
+      await withSessionRetry(attemptVoiceSend, (err) => {
+        const code = err instanceof ApiError ? err.code : "unknown_error";
+        setErrorBanner(friendlyErrorMessage(code));
+      });
+    } finally {
+      setIsSending(false);
+    }
+    return result;
   }
 
   async function attemptSend(
@@ -206,5 +290,5 @@ export function useChat(api: ApiClient, publicKey: string): ChatState {
     setErrorBanner(friendlyErrorMessage(code));
   }
 
-  return { status, config, messages, isSending, errorBanner, sendMessage };
+  return { status, config, messages, isSending, errorBanner, sendMessage, sendVoiceMessage };
 }

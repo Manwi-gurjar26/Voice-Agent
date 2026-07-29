@@ -4,7 +4,14 @@ import { act } from "@testing-library/preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type ApiClient } from "../api";
 import * as storage from "../storage";
-import type { AgentPublicConfig, ConversationRead, MessageRead, SseEvent, WidgetSessionResponse } from "../types";
+import type {
+  AgentPublicConfig,
+  ConversationRead,
+  MessageRead,
+  SseEvent,
+  VoiceReplyResponse,
+  WidgetSessionResponse,
+} from "../types";
 import { useChat } from "./useChat";
 
 const PUBLIC_KEY = "agt_pub_test123";
@@ -35,6 +42,12 @@ function makeApi(overrides: Partial<ApiClient> = {}): ApiClient {
     createConversation: vi.fn().mockResolvedValue({ id: "conv_1", created_at: "now" } satisfies ConversationRead),
     listMessages: vi.fn().mockResolvedValue([] as MessageRead[]),
     sendMessage: vi.fn().mockImplementation(() => asyncEvents([])),
+    sendVoiceMessage: vi.fn().mockResolvedValue({
+      transcript: "hello",
+      message: { id: "m_voice", role: "assistant", content: "hi there", citations: null, created_at: "now" },
+      audio_base64: "ZmFrZQ==",
+      audio_mime: "audio/mpeg",
+    } satisfies VoiceReplyResponse),
     ...overrides,
   };
 }
@@ -302,6 +315,169 @@ describe("useChat", () => {
     await act(async () => {
       resolveSend();
       await Promise.resolve();
+    });
+  });
+
+  describe("sendVoiceMessage", () => {
+    const AUDIO = new Blob(["fake-audio"], { type: "audio/webm" });
+
+    it("appends the transcript and reply as complete bubbles and resolves an audioUrl", async () => {
+      const api = makeApi();
+      const { result } = renderHook(() => useChat(api, PUBLIC_KEY));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      let audioUrl: string | undefined;
+      await act(async () => {
+        const outcome = await result.current.sendVoiceMessage(AUDIO, "recording.webm");
+        audioUrl = outcome ? outcome.audioUrl : undefined;
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[0]).toMatchObject({ role: "user", content: "hello", status: "complete" });
+      expect(result.current.messages[1]).toMatchObject({
+        role: "assistant",
+        content: "hi there",
+        status: "complete",
+      });
+      expect(audioUrl).toMatch(/^blob:/);
+      expect(result.current.isSending).toBe(false);
+      expect(api.createConversation).toHaveBeenCalledTimes(1);
+    });
+
+    it("resolves void (no audioUrl) when the reply has no audio", async () => {
+      const api = makeApi({
+        sendVoiceMessage: vi.fn().mockResolvedValue({
+          transcript: "hello",
+          message: { id: "m1", role: "assistant", content: "hi", citations: null, created_at: "now" },
+          audio_base64: "",
+          audio_mime: "audio/mpeg",
+        } satisfies VoiceReplyResponse),
+      });
+      const { result } = renderHook(() => useChat(api, PUBLIC_KEY));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      let outcome: { audioUrl: string } | void = undefined;
+      await act(async () => {
+        outcome = await result.current.sendVoiceMessage(AUDIO, "recording.webm");
+      });
+
+      expect(outcome).toBeUndefined();
+      expect(result.current.messages).toHaveLength(2);
+    });
+
+    it("reuses the conversation id across a text send and a voice send", async () => {
+      const api = makeApi();
+      const { result } = renderHook(() => useChat(api, PUBLIC_KEY));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      await act(async () => {
+        result.current.sendMessage("hi");
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(result.current.isSending).toBe(false));
+
+      await act(async () => {
+        await result.current.sendVoiceMessage(AUDIO, "recording.webm");
+      });
+
+      expect(api.createConversation).toHaveBeenCalledTimes(1);
+    });
+
+    it("on an auth error, refreshes the session and retries exactly once, succeeding", async () => {
+      let call = 0;
+      const api = makeApi({
+        sendVoiceMessage: vi.fn().mockImplementation(() => {
+          call += 1;
+          if (call === 1) return Promise.reject(new ApiError(401, "session_expired", "expired"));
+          return Promise.resolve({
+            transcript: "hello",
+            message: { id: "m1", role: "assistant", content: "hi", citations: null, created_at: "now" },
+            audio_base64: "",
+            audio_mime: "audio/mpeg",
+          } satisfies VoiceReplyResponse);
+        }),
+      });
+      const { result } = renderHook(() => useChat(api, PUBLIC_KEY));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      await act(async () => {
+        await result.current.sendVoiceMessage(AUDIO, "recording.webm");
+      });
+
+      expect(api.createSession).toHaveBeenCalledTimes(2); // bootstrap + retry
+      expect(api.sendVoiceMessage).toHaveBeenCalledTimes(2);
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.errorBanner).toBeNull();
+    });
+
+    it("shows a friendly error and appends nothing when the retry also fails", async () => {
+      const api = makeApi({
+        sendVoiceMessage: vi
+          .fn()
+          .mockImplementation(() => Promise.reject(new ApiError(401, "session_expired", "expired"))),
+      });
+      const { result } = renderHook(() => useChat(api, PUBLIC_KEY));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      await act(async () => {
+        await result.current.sendVoiceMessage(AUDIO, "recording.webm");
+      });
+
+      expect(result.current.messages).toHaveLength(0);
+      expect(result.current.errorBanner).toBe("Your session expired. Please refresh the page.");
+    });
+
+    it("maps a non-auth ApiError to a friendly banner without retrying", async () => {
+      const api = makeApi({
+        sendVoiceMessage: vi
+          .fn()
+          .mockImplementation(() => Promise.reject(new ApiError(422, "empty_transcript", "silent"))),
+      });
+      const { result } = renderHook(() => useChat(api, PUBLIC_KEY));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      await act(async () => {
+        await result.current.sendVoiceMessage(AUDIO, "recording.webm");
+      });
+
+      expect(api.createSession).toHaveBeenCalledTimes(1); // bootstrap only, no retry
+      expect(result.current.messages).toHaveLength(0);
+      expect(result.current.errorBanner).toBe("Something went wrong. Please try again.");
+    });
+
+    it("is a no-op while a send is already in flight", async () => {
+      let resolveVoice!: (value: VoiceReplyResponse) => void;
+      const api = makeApi({
+        sendVoiceMessage: vi.fn().mockImplementation(
+          () =>
+            new Promise<VoiceReplyResponse>((resolve) => {
+              resolveVoice = resolve;
+            }),
+        ),
+      });
+      const { result } = renderHook(() => useChat(api, PUBLIC_KEY));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      act(() => {
+        void result.current.sendVoiceMessage(AUDIO, "recording.webm");
+      });
+      await waitFor(() => expect(result.current.isSending).toBe(true));
+
+      act(() => {
+        void result.current.sendVoiceMessage(AUDIO, "recording.webm");
+      });
+
+      expect(api.sendVoiceMessage).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveVoice({
+          transcript: "hello",
+          message: { id: "m1", role: "assistant", content: "hi", citations: null, created_at: "now" },
+          audio_base64: "",
+          audio_mime: "audio/mpeg",
+        });
+        await Promise.resolve();
+      });
     });
   });
 });

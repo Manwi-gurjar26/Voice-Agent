@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/preact";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { ApiClient } from "./api";
 import type { AgentPublicConfig, SseEvent } from "./types";
@@ -24,8 +24,55 @@ function makeApi(overrides: Partial<ApiClient> = {}): ApiClient {
     createConversation: vi.fn().mockResolvedValue({ id: "conv_1", created_at: "now" }),
     listMessages: vi.fn().mockResolvedValue([]),
     sendMessage: vi.fn().mockImplementation(() => asyncEvents([])),
+    sendVoiceMessage: vi.fn().mockResolvedValue({
+      transcript: "What are your hours?",
+      message: { id: "m_voice", role: "assistant", content: "9 to 5.", citations: null, created_at: "now" },
+      audio_base64: "ZmFrZQ==",
+      audio_mime: "audio/mpeg",
+    }),
     ...overrides,
   };
+}
+
+type Listener = (event: { data: Blob }) => void;
+
+class FakeMediaRecorder {
+  static isTypeSupported(type: string): boolean {
+    return type === "audio/webm;codecs=opus";
+  }
+
+  state: "inactive" | "recording" = "inactive";
+  private listeners: Record<string, Listener[]> = {};
+
+  constructor(
+    public stream: MediaStream,
+    public options: { mimeType: string },
+  ) {}
+
+  addEventListener(type: string, listener: Listener): void {
+    (this.listeners[type] ??= []).push(listener);
+  }
+
+  start(): void {
+    this.state = "recording";
+  }
+
+  stop(): void {
+    this.state = "inactive";
+    const data = new Blob(["fake-audio"], { type: this.options.mimeType });
+    this.listeners.dataavailable?.forEach((listener) => listener({ data }));
+    this.listeners.stop?.forEach((listener) => listener({ data }));
+  }
+}
+
+function stubVoiceCapture() {
+  vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: {
+      getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream),
+    },
+  });
 }
 
 vi.mock("./api", () => ({
@@ -134,5 +181,35 @@ describe("App", () => {
 
     const root = container.querySelector(".va-root") as HTMLElement;
     expect(root.style.getPropertyValue("--va-primary")).toBe("#123456");
+  });
+
+  describe("voice", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("a full voice turn appends both bubbles and plays the reply audio", async () => {
+      stubVoiceCapture();
+      const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+      const { createApiClient } = await import("./api");
+      const api = makeApi({
+        getConfig: vi.fn().mockResolvedValue({ ...CONFIG, voice_enabled: true }),
+      });
+      vi.mocked(createApiClient).mockReturnValue(api);
+      const user = userEvent.setup();
+
+      render(<App baseUrl="https://api.example.com" publicKey="agt_pub_voice" />);
+      await waitFor(() => expect(screen.getByLabelText("Chat with Acme Bot")).toBeInTheDocument());
+      await user.click(screen.getByLabelText("Chat with Acme Bot"));
+
+      const micButton = await screen.findByLabelText("Record a voice message");
+      await user.click(micButton);
+      await waitFor(() => expect(screen.getByLabelText(/Stop recording/)).toBeInTheDocument());
+      await user.click(screen.getByLabelText(/Stop recording/));
+
+      await waitFor(() => expect(screen.getByText("What are your hours?")).toBeInTheDocument());
+      expect(screen.getByText("9 to 5.")).toBeInTheDocument();
+      expect(playSpy).toHaveBeenCalled();
+    });
   });
 });

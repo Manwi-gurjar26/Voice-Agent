@@ -438,3 +438,89 @@ applies only to `vitest --ui` — never run in this project. `npm audit fix
 (eslint 9→10, vitest 2→4) without vetting compatibility, to close
 vulnerabilities that don't affect the production artifact. Revisit when
 next touching devDependencies.
+
+## Voice (Step 7)
+
+Speech in, speech out — a mic button in the widget's composer (shown when an
+agent has `voice_enabled=true`), wired to real STT/TTS. This is turn-based,
+not a live open-mic phone call: record → transcribe → run the same chat
+pipeline as typed messages → speak the reply. A continuously-listening,
+interruptible voice call (streaming STT, voice-activity detection, barge-in)
+is a materially larger effort and was deliberately left out of this step.
+
+**One provider for both directions.** OpenAI (Whisper for STT, `tts-1` for
+TTS) — one new API key (`OPENAI_API_KEY`), one new SDK dependency, both
+optional at the settings level since voice is opt-in per agent.
+`Agent.voice_id` (present since the initial schema, unused until now) is
+validated against OpenAI's fixed voice names at the API boundary
+(`ALLOWED_VOICE_IDS` in `app/schemas/agent.py`), the same "reject a bad value
+at create/update time, not at the next spoken reply" pattern the origin
+allowlist already uses.
+
+**The voice endpoint reuses the text pipeline's guts, not a parallel one.**
+`chat_service.stream_turn` (SSE, for typed messages) and the new
+`chat_service.complete_turn` (a plain JSON response, for voice — TTS needs
+the full reply text before it can run, so there's nothing to stream) both
+delegate the identical quota-check → persist-user-message → retrieval →
+build-Claude-messages sequence to a shared `_prepare_turn` helper. Only the
+Claude call itself and how the result is returned differ. A spoken turn gets
+the exact same RAG augmentation, quota accounting, and conversation history
+handling as a typed one, for free.
+
+**A Step 6 CORS gap, fixed here.** While wiring up the new
+`/conversations/{id}/voice-messages` route, it turned out **none** of
+`public_chat.py`'s routes — including the pre-existing `/conversations` and
+`/conversations/{id}/messages` from Step 6 — had a registered `OPTIONS`
+handler. A real browser's CORS preflight for any of them would have failed
+outright (curl, used for Step 6's live verification, doesn't preflight, so
+this was never exercised). Fixed by adding the same kind of
+dependency-free `OPTIONS` handler `public.py`'s `/sessions/me` already uses
+for paths with no `{public_key}` segment, covering all three routes.
+
+**A TTS failure degrades to a silent reply, not a lost one.** By the time
+`synthesize_speech` runs, the assistant's text reply is already persisted
+(and quota already consumed, same unconditional-consumption policy as text
+messages — see Step 5/6 notes above). If the TTS call itself then fails, the
+endpoint still returns the transcript and text reply with `audio_base64: ""`
+rather than raising and discarding a reply that actually succeeded; the
+widget shows the text and simply doesn't play anything back.
+
+**Recording is a widget-owned concern, not bolted onto the chat hook.**
+`voiceCapture.ts`'s `VoiceRecorder` wraps `getUserMedia`/`MediaRecorder`
+entirely on its own (mimeType negotiation across browsers — Safari needs
+`audio/mp4`, everything else prefers `audio/webm;codecs=opus` — a 120-second
+hard cap, and mic-track cleanup on every exit path). Its `completion`
+promise resolves the same way whether a recording ends via a manual stop, the
+120s cap, or a cancellation, which is what lets `MicButton` auto-finalize a
+capped recording without the user having to tap stop again. `useChat`'s new
+`sendVoiceMessage` only ever receives a finished `Blob` — it has no idea
+`MediaRecorder` exists, and reuses the exact same session-expiry
+retry-once-then-friendly-banner logic (`withSessionRetry`, factored out of
+what was previously `sendMessage`-only code) as typed messages.
+
+**Testing.** Backend: 14 new tests (`test_voice.py`) covering the happy
+path, `voice_enabled=false` rejection, oversized uploads, empty transcripts,
+transcription/LLM/TTS provider failures, quota exhaustion, missing/wrong
+session or origin, and the new preflight route — full suite now 201 tests,
+all passing, Claude and OpenAI both faked at their respective client seams
+(`get_anthropic_client` / `get_openai_client`), no real API keys needed to
+run it. Widget: 27 new tests across `voiceCapture.test.ts` (a fake
+`MediaRecorder`/`getUserMedia`, including the auto-stop-cap and
+cancel-never-resolves cases), `MicButton.test.tsx`, new `useChat.test.ts`
+cases mirroring the existing text-send tests, and one `App.test.tsx`
+integration test that drives an actual tap-to-record-tap-to-stop cycle
+through the real component tree and asserts on `HTMLMediaElement.play` —
+full widget suite now 87 tests, gzip size 12.06 kB (up from 10.42 kB).
+
+**Live verification, partial, and why.** Both OpenAI and Anthropic require
+billing/credits on the account before the API accepts any request — this
+project's Anthropic key was swapped out for testing, and the OpenAI account
+in use doesn't have billing configured yet. Rather than fabricate results,
+live verification here stopped at confirming `OPENAI_API_KEY` is read
+correctly and that a real request reaches OpenAI (a `429 insufficient_quota`
+response, not an auth or code error). The full `synthesize_speech` →
+`transcribe_audio` round trip, and the endpoint-level test through a real
+`/voice-messages` call, are deferred until billing is set up on at least one
+account — the same "state what was and wasn't verified" disclosure as Step
+6's browser-automation gap, not a claim that this was fully exercised
+end-to-end against live providers.

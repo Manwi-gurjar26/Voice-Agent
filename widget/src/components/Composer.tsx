@@ -1,13 +1,23 @@
 import { useState } from "preact/hooks";
 import type { JSX } from "preact";
 import { SendIcon } from "../icons";
+import { MicButton } from "./MicButton";
 
 interface ComposerProps {
   disabled: boolean;
   onSend: (content: string) => void;
+  voiceEnabled?: boolean;
+  onVoiceMessage?: (audio: Blob, filename: string) => void;
+  onVoiceError?: (message: string) => void;
 }
 
-export function Composer({ disabled, onSend }: ComposerProps) {
+export function Composer({
+  disabled,
+  onSend,
+  voiceEnabled = false,
+  onVoiceMessage,
+  onVoiceError,
+}: ComposerProps) {
   const [value, setValue] = useState("");
 
   function submit() {
@@ -38,6 +48,9 @@ export function Composer({ disabled, onSend }: ComposerProps) {
         onKeyDown={handleKeyDown}
         aria-label="Message"
       />
+      {voiceEnabled && onVoiceMessage && onVoiceError && (
+        <MicButton disabled={disabled} onRecordingComplete={onVoiceMessage} onError={onVoiceError} />
+      )}
       <button
         type="button"
         class="va-send-button"

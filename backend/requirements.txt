@@ -21,6 +21,9 @@ pyjwt>=2.10,<3.0
 # --- LLM (used from Step 4 onward) ---
 anthropic>=0.69
 
+# --- Voice (Step 7) ---
+openai>=1.50,<2.0
+
 # --- RAG (Step 5) ---
 sentence-transformers>=3.0,<4.0   # local embeddings — no external API key needed
 numpy>=1.26,<2.1

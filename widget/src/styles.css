@@ -302,6 +302,41 @@
   height: 17px;
 }
 
+/* --- Mic button (Step 7) --- */
+.va-mic-button {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #f1f2f5;
+  color: #555;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.va-mic-button svg {
+  width: 17px;
+  height: 17px;
+}
+
+.va-mic-button.va-mic-recording {
+  background: #e0433a;
+  color: #fff;
+  animation: va-mic-pulse 1.4s infinite ease-in-out;
+}
+
+@keyframes va-mic-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(224, 67, 58, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(224, 67, 58, 0);
+  }
+}
+
 /* --- Bootstrapping / unavailable --- */
 .va-loading-row {
   display: flex;

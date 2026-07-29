@@ -13,6 +13,9 @@ interface ChatPanelProps {
   errorBanner: string | null;
   onSend: (content: string) => void;
   onClose: () => void;
+  voiceEnabled?: boolean;
+  onVoiceMessage?: (audio: Blob, filename: string) => void;
+  onVoiceError?: (message: string) => void;
 }
 
 export function ChatPanel({
@@ -24,6 +27,9 @@ export function ChatPanel({
   errorBanner,
   onSend,
   onClose,
+  voiceEnabled,
+  onVoiceMessage,
+  onVoiceError,
 }: ChatPanelProps) {
   return (
     <div class={`va-panel va-pos-${position}`} role="dialog" aria-label={`Chat with ${agentName}`}>
@@ -35,7 +41,13 @@ export function ChatPanel({
       </div>
       <MessageList greeting={greeting} messages={messages} />
       {errorBanner && <ErrorBanner message={errorBanner} />}
-      <Composer disabled={isSending} onSend={onSend} />
+      <Composer
+        disabled={isSending}
+        onSend={onSend}
+        voiceEnabled={voiceEnabled}
+        onVoiceMessage={onVoiceMessage}
+        onVoiceError={onVoiceError}
+      />
     </div>
   );
 }

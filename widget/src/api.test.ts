@@ -142,4 +142,46 @@ describe("createApiClient", () => {
     const iterator = client.sendMessage("tok", "conv1", "hi");
     await expect(iterator.next()).rejects.toMatchObject({ code: "quota_exceeded" });
   });
+
+  it("sendVoiceMessage POSTs a multipart body with no explicit Content-Type", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        transcript: "What are your hours?",
+        message: { id: "m1", role: "assistant", content: "9 to 5.", citations: null, created_at: "now" },
+        audio_base64: "ZmFrZQ==",
+        audio_mime: "audio/mpeg",
+      }),
+    );
+    const client = createApiClient(BASE_URL, PUBLIC_KEY);
+    const audio = new Blob(["fake-audio"], { type: "audio/webm" });
+
+    const reply = await client.sendVoiceMessage("tok", "conv1", audio, "recording.webm");
+
+    expect(reply.transcript).toBe("What are your hours?");
+    expect(reply.message.content).toBe("9 to 5.");
+    expect(reply.audio_base64).toBe("ZmFrZQ==");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/public/conversations/conv1/voice-messages`);
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeInstanceOf(FormData);
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer tok");
+    expect(headers["Content-Type"]).toBeUndefined();
+    const form = init.body as FormData;
+    expect(form.get("file")).toBeInstanceOf(Blob);
+  });
+
+  it("sendVoiceMessage throws an ApiError on failure", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ error: { code: "empty_transcript", message: "Could not hear anything." } }, 422),
+    );
+    const client = createApiClient(BASE_URL, PUBLIC_KEY);
+    const audio = new Blob(["x"], { type: "audio/webm" });
+
+    await expect(client.sendVoiceMessage("tok", "conv1", audio, "recording.webm")).rejects.toMatchObject({
+      status: 422,
+      code: "empty_transcript",
+    });
+  });
 });
