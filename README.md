@@ -339,3 +339,102 @@ The default test environment sets `DASHBOARD_CORS_ORIGINS=""`, which does not
 match production. `test_public.py` includes a dedicated regression test that
 builds an app with dashboard CORS actually configured to catch interaction
 bugs the default environment would hide — see the CORS design note above.
+
+## Widget (Step 6)
+
+A Preact widget that ships as a single `<script>` tag and floats a chat UI
+over the host page.
+
+```powershell
+cd widget
+npm install
+npm run dev        # dev harness at http://localhost:5173/?agentKey=...&apiBase=...
+npm run build       # tsc --noEmit, then emits dist/widget.js
+npm test            # vitest run
+npm run typecheck
+npm run lint
+```
+
+**Ships as one file, no module system assumed.** `vite.config.ts` builds in
+library mode with a single IIFE output (`dist/widget.js`) — no code
+splitting, no ESM. The result is 26.98 kB raw / **10.42 kB gzipped**, under
+the ~15KB gzip budget, and defines nothing on `window`: `main.tsx` has no
+exports, so Rollup's IIFE wrapper has nothing to attach globally. The embed
+snippet is exactly what `AgentRead.embed_snippet` (`app/schemas/agent.py`)
+generates: `<script src="{widget_cdn_url}" data-agent-key="{public_key}"
+async></script>`. The dev harness (`widget/index.html`, never shipped)
+substitutes `?agentKey=`/`?apiBase=` query params for those two data
+attributes.
+
+**Shadow DOM isolation, both directions.** The widget mounts into a host
+`<div>` with `style.all = "initial"` and an open shadow root, so the host
+page's global CSS can't leak in and the widget's own styles (`styles.css`,
+inlined via `?inline` and injected as a `<style>` inside the shadow root)
+can't leak out. Runtime theming (`primaryColor`, `bubbleRadius`, fetched from
+the agent's public config) is applied as CSS custom properties on the shadow
+root, not inline styles per element.
+
+**Hand-rolled SSE parsing, not `EventSource`.** The message-send request is a
+`POST` with a JSON body and an `Authorization` header — native `EventSource`
+only supports `GET` with no custom headers. `sse.ts` parses `event:`/`data:`
+blocks out of a `fetch()` `ReadableStream` directly, buffering across
+`reader.read()` chunk boundaries (`event: X\ndata: {...}\n\n`, matching
+`app/services/chat.py`'s `_sse()` helper byte-for-byte). Verified with a test
+suite that deliberately splits the same payload at arbitrary byte offsets,
+including exactly at the `\n\n` separator and one-character-at-a-time.
+
+**Session/conversation persistence uses `sessionStorage`, not
+`localStorage`.** A widget session already expires server-side after
+`widget_session_expire_minutes`; surviving a full browser restart would
+outlive what the token is good for anyway, and `sessionStorage` clears
+naturally when the tab closes. Storage keys are namespaced per
+`public_key`, every read/write is wrapped in try/catch (private browsing and
+storage-restricted iframes can throw — persistence degrading to "start
+fresh" is fine, a crash isn't), and a locally-expired token is rejected
+before even attempting server-side validation. If a session dies mid-visit
+(the 60-minute expiry is real for a tab left open), `useChat` refreshes it
+and retries the send exactly once, transparently — most visitors should
+never see "please refresh the page" just because they were reading for a
+while before typing.
+
+**Testing.** 60 tests across seven files (`npm test`): `sse.ts` (chunk-
+boundary edge cases), `api.ts` (mocked `fetch`, one test per endpoint plus
+error-envelope parsing), `storage.ts` (including sessionStorage-throws
+edge cases), `hooks/useChat.ts` (the state machine, against a fake
+`ApiClient` — bootstrap, session resume/refresh, streaming sends, the
+auth-error retry-once path, error-code-to-message mapping), and
+component/integration tests (`Composer`, `MessageBubble`, `App`) via
+`@testing-library/preact` covering open/close, typing and sending, streamed
+text arriving in the DOM, and the error banner.
+
+**Verified against a real running backend, with a caveat.** A tenant, agent,
+and origin allowlist (`http://localhost:5173`, the Vite dev server's origin)
+were created via the live dashboard API against a real Postgres instance,
+then exercised end-to-end with `curl` using the exact request shapes
+`api.ts` sends: CORS preflight (`OPTIONS`), session creation, session
+validation, conversation creation, sending a message and reading the SSE
+response, listing message history, and both an allowed and a rejected
+`Origin`. Every response matched what `types.ts` and `sse.ts` expect
+byte-for-byte, including the graceful `event: error` /
+`{"code": "llm_error", ...}` path with no `ANTHROPIC_API_KEY` configured —
+the same failure mode already covered by the backend's own live-server
+tests. What this did **not** cover: actually opening a browser and watching
+the widget mount, render, and stream into a real DOM — no browser-automation
+tool (Playwright/Puppeteer) was available in this environment, and
+installing one wasn't attempted without asking first. The DOM-level
+behavior that would exercise (mounting, shadow-root construction, the full
+open → type → send → stream → error-banner flow) is instead covered by the
+jsdom-based `App.test.tsx` suite, which drives the real hook and real
+components end-to-end against a scripted fake API client.
+
+**`npm audit` disclosure.** 10 findings (3 moderate, 6 high, 1 critical),
+all confined to dev-only tooling never present in the shipped `widget.js`:
+a `brace-expansion` ReDoS reachable only through eslint's `minimatch`
+dependency chain; a `vite`/`vite-node` path-traversal and dev-server issue
+reachable only while `vite dev`/`vitest` themselves are running; and a
+critical "arbitrary file read" in `vitest`'s optional UI server, which
+applies only to `vitest --ui` — never run in this project. `npm audit fix
+--force` was deliberately not run: it would force major breaking upgrades
+(eslint 9→10, vitest 2→4) without vetting compatibility, to close
+vulnerabilities that don't affect the production artifact. Revisit when
+next touching devDependencies.

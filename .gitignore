@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+# Vite convention: .env.development / .env.production hold no secrets and
+# are meant to be committed; only .env.*.local (still matched above) does.
+!.env.development
+!.env.production
 
 # Python
 __pycache__/
@@ -19,6 +23,8 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+vite.config.*.timestamp-*.mjs
+vitest.config.*.timestamp-*.mjs
 
 # Editors / OS
 .vscode/

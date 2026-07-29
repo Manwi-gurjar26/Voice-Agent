@@ -1,0 +1,39 @@
+// Minimal inline SVGs — avoids pulling in an icon font/library for three shapes.
+
+export function ChatIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path
+        d="M4 4h16v12H7.5L4 19.5V4z"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linejoin="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
+export function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path
+        d="M6 6l12 12M18 6L6 18"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+      />
+    </svg>
+  );
+}
+
+export function SendIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path
+        d="M4 12l16-8-6 8 6 8-16-8z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}

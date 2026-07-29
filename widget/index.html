@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Widget dev harness</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 640px;
+        margin: 60px auto;
+        padding: 0 20px;
+        color: #333;
+      }
+      code {
+        background: #f2f2f2;
+        padding: 2px 5px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Simulated host page</h1>
+    <p>
+      This stands in for a customer's website with the widget embedded. It is
+      <strong>not</strong> shipped — <code>npm run build</code> produces only
+      <code>dist/widget.js</code>.
+    </p>
+    <p>
+      Point it at a real agent: <code>?agentKey=agt_pub_...&amp;apiBase=http://127.0.0.1:8000/api/v1</code>
+      (apiBase defaults to <code>.env.development</code>'s value if omitted). The agent must be
+      <code>status: active</code> and its <code>allowed_origins</code> must include this dev
+      server's origin (typically <code>http://localhost:5173</code>).
+    </p>
+
+    <script>
+      const params = new URLSearchParams(location.search);
+      const agentKey = params.get("agentKey");
+      if (!agentKey) {
+        document.write(
+          "<p style='color:#a00'><strong>No ?agentKey= in the URL — the widget will not mount " +
+            "(see console). Add one to test.</strong></p>",
+        );
+      }
+      window.__VOICE_AGENT_DEV__ = {
+        publicKey: agentKey || "",
+        apiBaseUrl: params.get("apiBase") || "",
+      };
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
