@@ -1,0 +1,139 @@
+"""Application settings, loaded once from the environment."""
+
+from __future__ import annotations
+
+import json
+import secrets
+from functools import lru_cache
+from typing import Annotated, Literal
+
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+AppEnv = Literal["local", "test", "staging", "production"]
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # --- General ---
+    app_name: str = "Voice Agent Platform"
+    app_env: AppEnv = "local"
+    debug: bool = False
+    api_v1_prefix: str = "/api/v1"
+
+    # --- Database ---
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/voiceagent"
+    db_echo: bool = False
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+
+    # --- Security ---
+    secret_key: str = Field(default_factory=lambda: secrets.token_urlsafe(64))
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 14
+    jwt_algorithm: str = "HS256"
+
+    # --- CORS (dashboard API only) ---
+    # NoDecode is load-bearing: without it, pydantic-settings tries to
+    # json.loads() this value inside the env/dotenv source *before* any
+    # validator runs, so a plain `A,B` line in .env raises SettingsError and
+    # the app cannot start. NoDecode hands the raw string to _split_origins.
+    dashboard_cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    # --- Public URLs (used to build the customer's embed snippet) ---
+    public_base_url: str = "http://localhost:8000"
+    widget_cdn_url: str = "http://localhost:5173/widget.js"
+
+    # --- Auth policy ---
+    min_password_length: int = 12
+    max_failed_logins: int = 10
+    login_lockout_minutes: int = 15
+
+    # --- Public widget API ---
+    widget_session_expire_minutes: int = 60
+    public_rate_limit_window_seconds: int = 60
+
+    # --- LLM ---
+    anthropic_api_key: str | None = None
+    default_model: str = "claude-opus-5"
+
+    # --- RAG (Step 5) ---
+    # Local model — no API key needed. Swappable, but the embedding dimension
+    # is baked into every stored vector: changing models means re-embedding
+    # every existing chunk, not just updating this setting.
+    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    chunk_size_chars: int = 1_000
+    chunk_overlap_chars: int = 150
+    retrieval_top_k: int = 5
+    retrieval_min_similarity: float = 0.3
+
+    # Ingestion runs synchronously within the request (see README) — these
+    # bound worst-case request latency and cost, not just abuse.
+    max_pasted_text_chars: int = 200_000
+    max_upload_file_bytes: int = 5 * 1024 * 1024
+    url_fetch_timeout_seconds: float = 10.0
+    max_url_response_bytes: int = 5 * 1024 * 1024
+
+    @field_validator("dashboard_cors_origins", mode="before")
+    @classmethod
+    def _split_origins(cls, value: object) -> object:
+        """Accept a comma-separated string as well as a JSON list.
+
+        pydantic-settings parses complex types as JSON by default, which makes a
+        plain `A,B` value in .env a hard error. Both forms are normalised here,
+        including the JSON one — pydantic only auto-parses JSON for values that
+        came from the env source, not for direct constructor arguments.
+        """
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                try:
+                    return json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"malformed JSON list: {exc}") from exc
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        return value
+
+    @field_validator("database_url")
+    @classmethod
+    def _require_async_driver(cls, value: str) -> str:
+        if not value.startswith("postgresql+asyncpg://"):
+            raise ValueError(
+                "DATABASE_URL must use the asyncpg driver, "
+                "e.g. postgresql+asyncpg://user:pass@host:5432/dbname"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _guard_production(self) -> Settings:
+        if self.app_env == "production":
+            if self.debug:
+                raise ValueError("DEBUG must be false in production")
+            if len(self.secret_key) < 32 or self.secret_key.startswith("change-me"):
+                raise ValueError("SECRET_KEY must be a strong, explicitly-set value in production")
+        return self
+
+    @property
+    def sync_database_url(self) -> str:
+        """psycopg-style URL for Alembic, which runs migrations synchronously."""
+        return self.database_url.replace("+asyncpg", "", 1)
+
+    @property
+    def is_local(self) -> bool:
+        return self.app_env in ("local", "test")
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()
