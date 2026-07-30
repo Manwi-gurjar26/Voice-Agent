@@ -90,6 +90,18 @@ class Settings(BaseSettings):
     voice_default_voice: str = "alloy"
     max_voice_upload_bytes: int = 10 * 1024 * 1024
 
+    # --- Billing (Step 9) ---
+    # Price IDs are created in the merchant's own Stripe dashboard and differ
+    # per environment (test vs live) — never hardcoded. dashboard_base_url is
+    # used to build Checkout success/cancel URLs and the Portal return URL;
+    # nothing before this pointed the backend at the dashboard's own origin.
+    stripe_secret_key: str | None = None
+    stripe_webhook_secret: str | None = None
+    stripe_price_id_starter: str | None = None
+    stripe_price_id_pro: str | None = None
+    stripe_price_id_enterprise: str | None = None
+    dashboard_base_url: str = "http://localhost:3000"
+
     @field_validator("dashboard_cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:

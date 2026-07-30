@@ -84,6 +84,10 @@ def require_roles(*roles: UserRole):
 
 RequireAdmin = Annotated[User, Depends(require_roles(UserRole.OWNER, UserRole.ADMIN))]
 
+# Billing is more sensitive than agent configuration (it's the one thing
+# that moves money) — owner-only, not owner-or-admin.
+RequireOwner = Annotated[User, Depends(require_roles(UserRole.OWNER))]
+
 
 def client_ip(request: Request) -> str | None:
     """Best-effort client IP.

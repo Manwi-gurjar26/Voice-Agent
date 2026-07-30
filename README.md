@@ -618,3 +618,94 @@ preflight and the actual response headers for a cross-origin request from
 shapes `lib/api.ts` sends, the same rigor as Steps 6-7. Real click-through
 browser testing isn't automatable here (no Playwright/Puppeteer, disclosed
 since Step 6); the RTL component tests above cover that ground instead.
+
+## Billing (Step 9)
+
+Stripe Checkout to upgrade, a webhook handler to keep `Tenant.plan`/quota in
+sync with what Stripe reports, and a dashboard billing page. `Tenant.plan`
+and `monthly_message_quota` have existed since Step 1 with nothing to ever
+change them except a manual DB edit — this is what actually wires them up.
+Scope, confirmed upfront: Checkout + webhook sync + a dashboard page only.
+Stripe's own Customer Portal (linked from the dashboard) handles
+cancel/downgrade/payment-method changes; no custom invoice UI, proration, or
+usage-based pricing was built.
+
+**No client-object seam, unlike Anthropic/OpenAI.** `llm.py`/`voice.py` each
+hide a lazily-constructed client behind one function so tests can
+monkeypatch it. Stripe's async methods (`stripe.checkout.Session.create_async`,
+confirmed against the installed `stripe` 12.5.1 before writing any code
+against it) take `api_key` as a per-call argument instead, so there's no
+client object to construct — `app/services/billing.py`'s tests monkeypatch
+the resource methods themselves, which is stripe-python's own seam for this
+call style.
+
+**A real gotcha, caught before it shipped: `StripeObject` subclasses `dict`.**
+`subscription.items` resolves to `dict.items` (the built-in method), silently
+returning a bound method instead of the subscription's line items — verified
+directly in a Python shell before writing `apply_subscription_state`, not
+assumed. Every place that reads a Stripe object field whose name collides
+with a dict method uses bracket access (`subscription["items"]`); everything
+else (`.customer`, `.id`, `.client_reference_id`) uses ordinary attribute
+access, which `StripeObject` does support.
+
+**Billing is owner-only, not owner-or-admin.** Every other write in this API
+(`agents`, `documents`) allows owner **or** admin. Billing moves money, so
+`app/api/deps.py` gained a new `RequireOwner` alongside the existing
+`RequireAdmin` — a deliberately stricter bar than the precedent, not an
+oversight.
+
+**Calendar-aligned resets come from `invoice.paid`, not `customer.subscription.updated`.**
+A subscription can update for reasons that have nothing to do with a billing
+cycle renewing (a metadata change, a plan swap mid-cycle) — resetting
+`messages_used_in_period` there would zero out usage for the wrong reason.
+`invoice.paid` fires specifically when a billing cycle renews and is paid for,
+so that's the only handler that touches the usage counter.
+`customer.subscription.created`/`.updated` sync `plan`/`monthly_message_quota`
+and nothing else. The rolling 30-day window in `app/services/quota.py` is
+otherwise untouched — it's still exactly correct for a tenant that never
+subscribes.
+
+**Plan-to-quota mapping lives in code, not settings.** `PLAN_QUOTAS` in
+`app/services/billing.py` is a product decision (how much does each tier
+get), versioned with the code. Price *IDs*, by contrast, are environment
+config (`STRIPE_PRICE_ID_STARTER`/`_PRO`/`_ENTERPRISE`) — they're created in
+the merchant's own Stripe dashboard and differ between test and live mode, so
+they were never going to be hardcoded.
+
+**Webhook state mutators take no db session and never call `commit()`.**
+`app/db/session.py`'s `get_db` already commits at the end of every request;
+`app/services/chat.py`'s explicit mid-request commits are the documented
+exception, needed only because a subsequent step (the Claude call) can fail
+and the user's message must survive that. Nothing runs after
+`apply_subscription_state`/`reset_usage_period`/`downgrade_to_free` in the
+webhook handler, so there's nothing to protect against — they just mutate an
+already-session-attached `Tenant` and let the request's own commit handle
+the rest.
+
+**Testing.** Backend: 19 new tests (`test_billing.py`) — Checkout/Portal
+happy paths, owner-only enforcement, unconfigured-Stripe and
+no-Stripe-customer-yet error paths, and every webhook event type's state
+transition, including a subscription with a price this app doesn't
+recognise (leaves the plan untouched, logs a warning, doesn't crash) and an
+event for a customer/subscription matching no tenant (200, no-op). Webhook
+signature tests replicate Stripe's actual HMAC scheme by hand
+(`t={timestamp},v1={hmac}`) and run through the real
+`stripe.Webhook.construct_event`, not a mocked verifier — a forged signature
+is asserted to actually fail, not just assumed to. Full suite now 220 tests.
+Dashboard: 9 new tests (`lib/api.ts` checkout/portal calls,
+`billing/page.test.tsx` covering usage display, tier-filtering by current
+plan, both redirect flows, the checkout-return toast/refresh/query-param-clear
+behavior for `?checkout=success` vs `?checkout=cancelled`) — 56 total.
+
+**Live verification: not performed, by explicit choice.** Exercising this for
+real needs a Stripe test-mode account (secret key, webhook signing secret,
+three test Price IDs) that wasn't available this session — offered, and
+declined in favor of moving forward. Unlike voice's OpenAI gap (where a key
+existed but lacked billing) or the dashboard's CORS gap (fully verified),
+this step's live path is entirely unexercised against the real Stripe API.
+What *is* verified: real signature-verification code, a real (by-hand)
+HMAC-signed payload, and every Stripe SDK field name/collision used here was
+checked against the installed package directly rather than assumed. Set the
+`STRIPE_*` variables in `backend/.env` and `dashboard/.env.local`'s
+`NEXT_PUBLIC_API_BASE_URL` to point at a running backend to exercise the real
+Checkout/Portal/webhook flow end-to-end.

@@ -14,6 +14,10 @@ interface AuthContextValue {
   login: (payload: LoginRequest) => Promise<void>;
   signup: (payload: SignupRequest) => Promise<void>;
   logout: () => Promise<void>;
+  /** Re-fetches user/tenant without touching auth status — used after
+   * returning from Stripe Checkout, since the webhook that updates the
+   * tenant's plan lands asynchronously and the cached context is stale. */
+  refresh: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -86,7 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [markSignedOut]);
 
   return (
-    <AuthContext.Provider value={{ status, user, tenant, login, signup, logout }}>
+    <AuthContext.Provider value={{ status, user, tenant, login, signup, logout, refresh: loadCurrentUser }}>
       {children}
     </AuthContext.Provider>
   );

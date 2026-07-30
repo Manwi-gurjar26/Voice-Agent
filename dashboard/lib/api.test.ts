@@ -1,5 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, createAgent, deleteAgent, getAgent, listAgents, login, logout, me, signup, updateAgent } from "./api";
+import {
+  ApiError,
+  createAgent,
+  createCheckoutSession,
+  createPortalSession,
+  deleteAgent,
+  getAgent,
+  listAgents,
+  login,
+  logout,
+  me,
+  signup,
+  updateAgent,
+} from "./api";
 import { loadAuth, storeAuth } from "./auth-storage";
 
 const BASE_URL = "https://api.example.com/api/v1";
@@ -72,7 +85,15 @@ describe("api", () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         user: { id: "u1", email: "a@b.com", full_name: null, role: "owner", is_active: true, created_at: "now", last_login_at: null },
-        tenant: { id: "t1", name: "Acme", slug: "acme", plan: "free", monthly_message_quota: 1000 },
+        tenant: {
+          id: "t1",
+          name: "Acme",
+          slug: "acme",
+          plan: "free",
+          monthly_message_quota: 1000,
+          messages_used_in_period: 0,
+          period_started_at: "now",
+        },
       }),
     );
 
@@ -167,5 +188,30 @@ describe("api", () => {
   it("logout is a no-op against the network when there is no stored session", async () => {
     await logout();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("createCheckoutSession POSTs the plan and returns the Checkout URL", async () => {
+    seedAuth();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ url: "https://checkout.stripe.com/test" }));
+
+    const result = await createCheckoutSession("pro");
+
+    expect(result).toEqual({ url: "https://checkout.stripe.com/test" });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/billing/checkout-session`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ plan: "pro" });
+  });
+
+  it("createPortalSession POSTs with no body and returns the Portal URL", async () => {
+    seedAuth();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ url: "https://billing.stripe.com/test" }));
+
+    const result = await createPortalSession();
+
+    expect(result).toEqual({ url: "https://billing.stripe.com/test" });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/billing/portal-session`);
+    expect(init.method).toBe("POST");
   });
 });

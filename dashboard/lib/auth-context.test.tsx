@@ -23,7 +23,15 @@ const ME: MeResponse = {
     created_at: "now",
     last_login_at: null,
   },
-  tenant: { id: "t1", name: "Acme", slug: "acme", plan: "free", monthly_message_quota: 1000 },
+  tenant: {
+    id: "t1",
+    name: "Acme",
+    slug: "acme",
+    plan: "free",
+    monthly_message_quota: 1000,
+    messages_used_in_period: 0,
+    period_started_at: "now",
+  },
 };
 
 const TOKENS: TokenPair = { access_token: "acc", refresh_token: "ref", token_type: "bearer", expires_in: 1800 };

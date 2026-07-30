@@ -33,6 +33,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <Link href="/agents" className="font-semibold">
             {tenant?.name ?? "Voice Agent Platform"}
           </Link>
+          <nav className="flex items-center gap-4 text-sm">
+            <Link href="/agents" className="text-muted-foreground hover:text-foreground">
+              Agents
+            </Link>
+            <Link href="/billing" className="text-muted-foreground hover:text-foreground">
+              Billing
+            </Link>
+          </nav>
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             <span>{user?.email}</span>
             <Button variant="outline" size="sm" onClick={() => void logout()}>

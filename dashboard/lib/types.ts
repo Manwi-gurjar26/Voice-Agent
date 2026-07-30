@@ -57,6 +57,18 @@ export interface TenantRead {
   slug: string;
   plan: PlanTier;
   monthly_message_quota: number;
+  messages_used_in_period: number;
+  period_started_at: string;
+}
+
+export type PaidPlan = "starter" | "pro" | "enterprise";
+
+export interface CheckoutSessionResponse {
+  url: string;
+}
+
+export interface PortalSessionResponse {
+  url: string;
 }
 
 export interface UserRead {

@@ -5,8 +5,11 @@ import type {
   AgentRead,
   AgentUpdate,
   ApiErrorBody,
+  CheckoutSessionResponse,
   LoginRequest,
   MeResponse,
+  PaidPlan,
+  PortalSessionResponse,
   SignupRequest,
   TokenPair,
 } from "./types";
@@ -171,4 +174,12 @@ export function updateAgent(id: string, payload: AgentUpdate): Promise<AgentRead
 
 export async function deleteAgent(id: string): Promise<void> {
   await authedRequest<void>(`/agents/${id}`, { method: "DELETE" });
+}
+
+export function createCheckoutSession(plan: PaidPlan): Promise<CheckoutSessionResponse> {
+  return authedRequest<CheckoutSessionResponse>("/billing/checkout-session", jsonInit("POST", { plan }));
+}
+
+export function createPortalSession(): Promise<PortalSessionResponse> {
+  return authedRequest<PortalSessionResponse>("/billing/portal-session", { method: "POST" });
 }

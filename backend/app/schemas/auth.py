@@ -69,6 +69,11 @@ class TenantRead(BaseModel):
     slug: str
     plan: PlanTier
     monthly_message_quota: int
+    # Usage-this-period, so the dashboard's billing page needs no second
+    # endpoint. Raw Stripe identifiers are deliberately not exposed here —
+    # the dashboard only needs plan/usage, not Stripe's internal ids.
+    messages_used_in_period: int
+    period_started_at: datetime
 
 
 class UserRead(BaseModel):
