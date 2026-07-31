@@ -709,3 +709,100 @@ checked against the installed package directly rather than assumed. Set the
 `STRIPE_*` variables in `backend/.env` and `dashboard/.env.local`'s
 `NEXT_PUBLIC_API_BASE_URL` to point at a running backend to exercise the real
 Checkout/Portal/webhook flow end-to-end.
+
+## Deployment (Step 10)
+
+Closes out three TODOs that have been sitting in code comments since the
+steps that wrote them, plus containerizes the whole stack.
+
+```powershell
+cp .env.example .env                    # POSTGRES_*, PUBLIC_ORIGIN
+cp backend/.env.example backend/.env    # fill in real secrets
+docker compose up --build
+```
+
+**Environment constraint, disclosed upfront: none of this was ever actually
+built or run.** This environment has no Docker (`docker --version` → not
+found) and no local Redis server (nothing on 6379, no `redis-server` on
+PATH). Every file below was written and then re-read carefully for internal
+consistency — the YAML was parsed with `yaml.safe_load` to catch syntax
+errors, env var names were cross-checked against what `config.py` actually
+reads, the healthcheck's endpoint path was verified against the real router,
+the migration env-var flow was traced through `alembic/env.py` — but none of
+it was ever `docker build`ed or `docker compose up`ed. Same category of gap
+as the Playwright/live-Stripe disclosures in earlier steps, stated plainly
+rather than claimed otherwise.
+
+**Rate limiting gets a Redis backend, selected by whether `REDIS_URL` is
+set — not a rewrite.** `app/services/rate_limit.py`'s in-memory sliding
+window (a deque per key, correct only within one process) was the whole
+reason multi-worker deployment didn't work before. It's now one of two
+backends behind the exact same `check()`/`_reset_for_tests()` functions
+every call site already used — `app/api/public_deps.py` didn't change at
+all. `REDIS_URL` unset (every existing dev/test environment) keeps the
+in-memory backend exactly as it was; the docker-compose stack sets it to
+`redis://redis:6379/0` and gets a sliding window shared across all 4 uvicorn
+worker processes via a per-key sorted set (`ZREMRANGEBYSCORE` to evict,
+`ZCARD` to count, `ZADD`+`EXPIRE` to record).
+
+**The Redis backend is deliberately not atomic, and that's written down, not
+hidden.** A textbook-correct implementation uses a Lua script (`EVAL`) so
+the count-then-add is one atomic round trip. This one doesn't: `fakeredis`
+(the in-memory Redis emulator used to test this, since no real server is
+available here) doesn't support `EVAL`/`EVALSHA` without the optional `lupa`
+C-extension — confirmed by actually trying it and reading the resulting
+traceback, not assumed. The result is a narrow race (two requests landing in
+the same instant right at the limit could both be admitted), judged
+acceptable for a best-effort abuse layer — unlike `app/services/quota.py`
+(a hard billing boundary, enforced with a real row lock), nothing here needs
+to be airtight.
+
+**`X-Forwarded-For` is no longer trusted by default.** `client_ip()`
+(`app/api/deps.py`) previously read it unconditionally — fine only because
+the docstring already flagged that a directly-exposed instance lets any
+client forge its own rate-limit/audit IP by just sending the header itself.
+A new `TRUST_PROXY_HEADERS` setting (default `false`) gates it; the
+docker-compose backend service sets it `true`, since nginx is what actually
+overwrites the header there.
+
+**The SSE no-buffering header (Step 6) finally has something to be
+load-bearing against.** `nginx/nginx.conf` sets `proxy_buffering off` on the
+whole `/api/` prefix (not just the one streaming route — simpler than a
+second location block, harmless for ordinary JSON responses) — the
+reverse-proxy config the `X-Accel-Buffering: no` response header was always
+written for.
+
+**One nginx origin means the dashboard and backend become same-origin in
+production, but CORS is still configured defensively.** Fronting both
+through nginx on one public origin (`PUBLIC_ORIGIN`) means the browser's
+calls from the dashboard to `/api/...` are no longer cross-origin at all —
+but `DASHBOARD_CORS_ORIGINS` is still set to that same origin in
+docker-compose, in case anything ever reaches the backend container
+directly.
+
+**`NEXT_PUBLIC_*` is baked in at image build time, not read at container
+start — a real Next.js gotcha, checked against the actual framework
+behavior rather than assumed.** `dashboard/Dockerfile` takes
+`NEXT_PUBLIC_API_BASE_URL` as a build `ARG`, not a runtime environment
+variable; docker-compose passes it via `build.args`, pointed at
+`PUBLIC_ORIGIN` (browser-reachable through nginx) — never the
+Docker-internal `http://backend:8000`, which no browser can resolve.
+`next.config.ts` also gained `output: "standalone"`, confirmed against the
+bundled Next.js 16 docs (this project's Next version is new enough that its
+own `AGENTS.md` warns training-data assumptions may not hold) — verified
+`.next/standalone/server.js` actually gets produced by a real `npm run
+build`, not just assumed from the docs.
+
+**Testing.** Backend: 11 new tests — `test_rate_limit_redis.py` (admits up
+to the limit then rejects, independent keys, window eviction via a
+module-swapped fake clock, `retry_after` bounds, confirms the in-memory path
+is untouched when `REDIS_URL` is unset) against `fakeredis`, and
+`test_deps.py` (`X-Forwarded-For` trusted vs. ignored, truncation, the
+no-client fallback). Full suite now 231 tests. Dashboard: unchanged by this
+step (no dashboard *code* changed — only its Dockerfile/config).
+
+**What's out of scope, same as confirmed upfront.** No CI/CD pipeline, no
+WAF/CAPTCHA/anomaly detection (the abuse-defense territory an earlier
+README note flagged as "Step 9/10"), no cloud-provider-specific IaC, no TLS
+certificates — `nginx/nginx.conf` has a commented placeholder and a note
+that real certs (e.g. via certbot) are a deployment-specific follow-up.

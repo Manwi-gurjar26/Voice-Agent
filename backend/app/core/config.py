@@ -102,6 +102,18 @@ class Settings(BaseSettings):
     stripe_price_id_enterprise: str | None = None
     dashboard_base_url: str = "http://localhost:3000"
 
+    # --- Deployment (Step 10) ---
+    # Unset (default) keeps app/services/rate_limit.py on its in-memory
+    # backend — correct for local dev/tests and a single process. Set this
+    # once running more than one worker/instance, and the same rate_limit.check()
+    # call sites switch to the Redis-backed implementation with no code change.
+    redis_url: str | None = None
+    # Default-safe: X-Forwarded-For is attacker-controlled unless something
+    # in front of this process (nginx, a load balancer) overwrites it before
+    # the request arrives. Only flip this on for a deployment that actually
+    # sits behind such a proxy — see app/api/deps.py::client_ip.
+    trust_proxy_headers: bool = False
+
     @field_validator("dashboard_cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:

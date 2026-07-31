@@ -1,0 +1,94 @@
+# Runs the whole stack behind nginx: `docker compose up --build`.
+#
+# Prerequisites: backend/.env (copy from backend/.env.example) and this
+# repo root's .env (copy from .env.example) both filled in. dashboard/.env.local
+# is NOT used here — the dashboard's NEXT_PUBLIC_API_BASE_URL is baked in at
+# image build time instead (see dashboard/Dockerfile's ARG/ENV comment).
+#
+# Only nginx publishes a host port; postgres/redis/backend/dashboard are
+# reachable solely over the internal Docker network by service name. Add a
+# `ports:` entry back to any one of them for local debugging if needed (e.g.
+# hitting the backend's own /docs directly).
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-voiceagent}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      # Compose-specific overrides — these win over whatever's in
+      # backend/.env, since that file is written for connecting to a
+      # locally-installed Postgres/no Redis, not these service names.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-voiceagent}
+      REDIS_URL: redis://redis:6379/0
+      TRUST_PROXY_HEADERS: "true"
+      APP_ENV: production
+      DEBUG: "false"
+      # Both browser-reachable through nginx, same reasoning as the
+      # dashboard's build arg below — nginx serves /widget.js itself, and
+      # DASHBOARD_BASE_URL builds Stripe Checkout/Portal redirect URLs the
+      # customer's browser is sent to.
+      WIDGET_CDN_URL: ${PUBLIC_ORIGIN:-http://localhost}/widget.js
+      DASHBOARD_BASE_URL: ${PUBLIC_ORIGIN:-http://localhost}
+      DASHBOARD_CORS_ORIGINS: ${PUBLIC_ORIGIN:-http://localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:8000/api/v1/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  dashboard:
+    build:
+      context: ./dashboard
+      args:
+        # Must be a browser-reachable URL through nginx, never the
+        # Docker-internal `backend` hostname — see Dockerfile's comment.
+        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_ORIGIN:-http://localhost}/api/v1
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    ports:
+      - "80:80"
+      # - "443:443"   # add once real TLS certificates are configured
+    depends_on:
+      backend:
+        condition: service_healthy
+      dashboard:
+        condition: service_started
+
+volumes:
+  postgres_data:

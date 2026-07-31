@@ -1,0 +1,9 @@
+node_modules/
+.next/
+out/
+.env.local
+.env*.local
+coverage/
+.git/
+*.test.ts
+*.test.tsx

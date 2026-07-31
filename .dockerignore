@@ -1,0 +1,14 @@
+# Only nginx's build (context: .) reads this — backend/ and dashboard/ have
+# their own .dockerignore for their own (smaller) build contexts. Without
+# this, the whole repo — including backend/.venv and every node_modules —
+# would be sent to the Docker daemon just to build an image that only ever
+# copies widget/ out of it.
+.git/
+backend/.venv/
+backend/__pycache__/
+backend/.pytest_cache/
+widget/node_modules/
+widget/dist/
+dashboard/node_modules/
+dashboard/.next/
+*.md

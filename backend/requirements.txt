@@ -27,6 +27,9 @@ openai>=1.50,<2.0
 # --- Billing (Step 9) ---
 stripe>=11,<13
 
+# --- Deployment (Step 10) ---
+redis>=5.0,<7.0
+
 # --- RAG (Step 5) ---
 sentence-transformers>=3.0,<4.0   # local embeddings — no external API key needed
 numpy>=1.26,<2.1
@@ -38,3 +41,4 @@ python-multipart>=0.0.9           # required by FastAPI for file-upload endpoint
 pytest>=8.3
 pytest-asyncio>=0.24
 httpx>=0.28
+fakeredis>=2.20,<3.0        # in-memory Redis emulator for rate_limit.py's Redis backend

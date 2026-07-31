@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.errors import AuthenticationError, PermissionError_
 from app.core.security import decode_token
 from app.db.session import get_db
@@ -92,11 +93,15 @@ RequireOwner = Annotated[User, Depends(require_roles(UserRole.OWNER))]
 def client_ip(request: Request) -> str | None:
     """Best-effort client IP.
 
-    X-Forwarded-For is trusted only because this service is expected to sit
-    behind a proxy that overwrites it. Directly exposed, the header is
-    attacker-controlled — revisit when deployment is finalised in Step 10.
+    X-Forwarded-For is only trusted when settings.trust_proxy_headers is
+    explicitly set (see .env.example) — that's this deployment asserting
+    something in front of it (the bundled nginx, a load balancer) actually
+    overwrites the header before the request arrives. Left at its default
+    (false), a direct client can spoof its own rate-limit/audit IP simply by
+    sending the header itself, so this must not be trusted unconditionally.
     """
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:45]
+    if settings.trust_proxy_headers:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()[:45]
     return request.client.host if request.client else None
