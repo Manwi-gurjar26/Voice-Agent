@@ -18,7 +18,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-voiceagent}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # postgres:18+ images store data using pg_ctlcluster-style
+      # major-version-specific subdirectories and expect the volume mounted
+      # at the whole /var/lib/postgresql root, not the old /var/lib/postgresql/data
+      # path — mounting at .../data throws a hard startup error on this image.
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s

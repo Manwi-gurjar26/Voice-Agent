@@ -418,14 +418,31 @@ response, listing message history, and both an allowed and a rejected
 byte-for-byte, including the graceful `event: error` /
 `{"code": "llm_error", ...}` path with no `ANTHROPIC_API_KEY` configured —
 the same failure mode already covered by the backend's own live-server
-tests. What this did **not** cover: actually opening a browser and watching
-the widget mount, render, and stream into a real DOM — no browser-automation
-tool (Playwright/Puppeteer) was available in this environment, and
-installing one wasn't attempted without asking first. The DOM-level
-behavior that would exercise (mounting, shadow-root construction, the full
-open → type → send → stream → error-banner flow) is instead covered by the
-jsdom-based `App.test.tsx` suite, which drives the real hook and real
-components end-to-end against a scripted fake API client.
+tests.
+
+**Update: the real-browser gap above is now closed.** Playwright (Chromium,
+installed fresh into a scratch npm project — no admin rights or Docker
+needed) drove an actual browser against the real backend/Postgres/dashboard
+dev server: created a tenant via the dashboard signup form, created and
+activated an agent with `allowed_origins` set to the widget dev server's
+origin, extracted the real `public_key` from the rendered `embed_snippet`,
+then loaded the widget dev harness pointed at that agent. Playwright's
+selector engine pierces open shadow roots automatically, so no special
+handling was needed to find `.va-launcher` inside the widget's shadow DOM.
+Confirmed in the real DOM, with screenshots: the launcher mounts and renders
+correctly on a simulated host page, clicking it opens the panel with the
+agent's real greeting, a typed message sends and appears as a user bubble,
+and — since this environment still has no billed `ANTHROPIC_API_KEY` — the
+same `TypeError` from the Anthropic SDK seen in backend logs surfaces
+exactly as the widget's `ErrorBanner` component ("The assistant is
+temporarily unavailable...") rather than a broken UI or a hang. What's
+still not covered by this pass: voice/mic (`getUserMedia` in a headless
+browser is its own can of worms) and a genuine successful Claude reply
+rendering and streaming into the DOM (blocked on the same missing-API-key
+gap as Step 7's live voice verification). The jsdom-based `App.test.tsx`
+suite continues to cover the full open → type → send → stream →
+error-banner flow at the component level, now corroborated rather than
+merely inferred by this real-browser run.
 
 **`npm audit` disclosure.** 10 findings (3 moderate, 6 high, 1 critical),
 all confined to dev-only tooling never present in the shipped `widget.js`:
@@ -615,9 +632,19 @@ fields, confirming server-side defaults apply when they're omitted), list,
 update (status + rate limit), token refresh, delete, and both the CORS
 preflight and the actual response headers for a cross-origin request from
 `http://localhost:3000` — all via `curl` replicating the exact request
-shapes `lib/api.ts` sends, the same rigor as Steps 6-7. Real click-through
-browser testing isn't automatable here (no Playwright/Puppeteer, disclosed
-since Step 6); the RTL component tests above cover that ground instead.
+shapes `lib/api.ts` sends, the same rigor as Steps 6-7.
+
+**Update: real click-through browser testing, now done.** The same
+Playwright run described in Step 6's update also drives the dashboard
+itself: a real signup form submission (with real client + server-side
+validation), redirect to `/agents`, the agent-creation form, and the
+`status` field's custom Base UI `Select` (opened and an option chosen via
+Playwright's role-based locators — it's not a native `<select>`, so this
+confirms the component is actually operable by something other than a
+mocked RTL environment). Not covered in this pass: the login page,
+the delete-agent confirmation dialog, and the billing page's Stripe
+redirect flows (blocked on the same missing-Stripe-account gap as Step 9)
+— the RTL component tests above are still the only coverage for those.
 
 ## Billing (Step 9)
 
@@ -721,17 +748,37 @@ cp backend/.env.example backend/.env    # fill in real secrets
 docker compose up --build
 ```
 
-**Environment constraint, disclosed upfront: none of this was ever actually
-built or run.** This environment has no Docker (`docker --version` → not
-found) and no local Redis server (nothing on 6379, no `redis-server` on
-PATH). Every file below was written and then re-read carefully for internal
-consistency — the YAML was parsed with `yaml.safe_load` to catch syntax
-errors, env var names were cross-checked against what `config.py` actually
-reads, the healthcheck's endpoint path was verified against the real router,
-the migration env-var flow was traced through `alembic/env.py` — but none of
-it was ever `docker build`ed or `docker compose up`ed. Same category of gap
-as the Playwright/live-Stripe disclosures in earlier steps, stated plainly
-rather than claimed otherwise.
+**Update: now actually built and run, end to end — and it caught a real bug
+on the first attempt.** Docker Desktop was installed on the dev machine
+(WSL2 backend; needed a BIOS-level virtualization flag flipped first) and
+`docker compose up --build` was run for real. `postgres:18-alpine` refused
+to start with the original config: recent `postgres` images require the
+volume mounted at `/var/lib/postgresql` (the whole data root), not
+`/var/lib/postgresql/data` as this file originally had it — the entrypoint
+hard-errors instead of silently doing the wrong thing, which is exactly
+why this was worth actually running rather than trusting the YAML review
+below. Fixed in `docker-compose.yml`; confirmed with a clean `down -v` +
+`up --build` that a fresh, empty volume now initializes correctly.
+
+With that fixed, all five containers (`postgres`, `redis`, `backend`,
+`dashboard`, `nginx`) came up and reported healthy, alembic ran every
+migration from a blank database through nginx's own container network, and
+a full request round-trip was exercised *through nginx* (not hitting any
+container port directly): dashboard signup → agent creation → activation →
+a real widget session → conversation → message send, returning the same
+graceful `event: error` SSE payload as the local runs (still no billed
+Anthropic key on this machine). `/widget.js` served correctly from nginx's
+static location block. Most importantly, the thing this step actually
+exists for — Redis-backed, cross-worker rate limiting — was verified
+against a **real** Redis container, not `fakeredis`: an agent's
+`rate_limit_per_minute` was lowered to 3, and requests 1–3 returned `200`
+while requests 4–5 returned `429` with `retry_after: 60`, exactly matching
+`app/services/rate_limit.py`'s design. One environment-specific wrinkle,
+not a project bug: this dev machine's port 80 is already bound by Windows'
+own IIS (`W3SVC`/HTTP.sys), so verification used a throwaway Compose
+override remapping nginx to port 8080 — deleted afterward, not part of the
+committed config, and irrelevant to a real Linux deployment target where
+port 80 is normally free.
 
 **Rate limiting gets a Redis backend, selected by whether `REDIS_URL` is
 set — not a rewrite.** `app/services/rate_limit.py`'s in-memory sliding
@@ -799,7 +846,9 @@ module-swapped fake clock, `retry_after` bounds, confirms the in-memory path
 is untouched when `REDIS_URL` is unset) against `fakeredis`, and
 `test_deps.py` (`X-Forwarded-For` trusted vs. ignored, truncation, the
 no-client fallback). Full suite now 231 tests. Dashboard: unchanged by this
-step (no dashboard *code* changed — only its Dockerfile/config).
+step (no dashboard *code* changed — only its Dockerfile/config). Live: the
+containerized-stack run described above, exercising the real Redis backend
+`test_rate_limit_redis.py` can only fake.
 
 **What's out of scope, same as confirmed upfront.** No CI/CD pipeline, no
 WAF/CAPTCHA/anomaly detection (the abuse-defense territory an earlier
