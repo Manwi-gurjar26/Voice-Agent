@@ -27,8 +27,8 @@ class Tenant(Base, UUIDMixin, TimestampMixin):
         CheckConstraint("messages_used_in_period >= 0", name="messages_used_non_negative"),
         # Postgres allows multiple NULLs in a unique column, so this only
         # constrains tenants that have actually checked out at least once.
-        UniqueConstraint("stripe_customer_id", name="uq_tenants_stripe_customer_id"),
-        UniqueConstraint("stripe_subscription_id", name="uq_tenants_stripe_subscription_id"),
+        UniqueConstraint("dodo_customer_id", name="uq_tenants_dodo_customer_id"),
+        UniqueConstraint("dodo_subscription_id", name="uq_tenants_dodo_subscription_id"),
     )
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -55,12 +55,18 @@ class Tenant(Base, UUIDMixin, TimestampMixin):
     )
 
     # --- Billing (Step 9) ---
-    # Both null for a tenant that has never checked out. stripe_customer_id
+    # Both null for a tenant that has never checked out. dodo_customer_id
     # outlives a cancelled subscription (see downgrade_to_free) so a
-    # returning customer reuses the same Stripe Customer instead of a new
+    # returning customer reuses the same Dodo Customer instead of a new
     # one being created on every resubscribe.
-    stripe_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    stripe_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #
+    # Originally Stripe; swapped to Dodo Payments (a merchant-of-record
+    # gateway) because Stripe does not onboard new India-registered
+    # accounts, and this platform needed to be usable by an India-based
+    # merchant from day one. Dodo's Python SDK mirrors this project's other
+    # provider seams (a real client object, not per-call static methods).
+    dodo_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    dodo_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     users: Mapped[list[User]] = relationship(
         back_populates="tenant", cascade="all, delete-orphan", lazy="raise"

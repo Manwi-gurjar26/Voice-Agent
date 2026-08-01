@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: voiceagent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      # Slow on a cold cache: requirements.txt pulls in sentence-transformers
+      # + torch (a few hundred MB) for local RAG embeddings, same as local
+      # dev setup — see README. The pip cache above keeps repeat runs fast.
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          # conftest.py requires the database name to end in "_test" and
+          # runs real alembic migrations against it — no separate migration
+          # step needed here. SECRET_KEY/DASHBOARD_CORS_ORIGINS are defaulted
+          # by conftest.py itself when unset.
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/voiceagent_test
+        run: python -m pytest
+
+  dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # jsdom@30's bundled undici calls a webidl API only present from
+          # Node 22 onward — Node 20 fails with "webidl.util.markAsUncloneable
+          # is not a function" the moment a test file imports jsdom. Confirmed
+          # by actually running this job locally via `act` and hitting that
+          # exact crash before pinning this.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  widget:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: widget
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: widget/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build

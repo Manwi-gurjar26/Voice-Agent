@@ -1,31 +1,46 @@
-"""Stripe billing: Checkout, Customer Portal, and webhook-driven state sync.
+"""Dodo Payments billing: Checkout, Customer Portal, and webhook-driven state sync.
 
-No client-object seam like llm.get_anthropic_client/voice.get_openai_client:
-stripe-python's async resource methods (`create_async`) accept `api_key` as a
-per-call argument, so there is no global client to construct or monkeypatch —
-tests instead monkeypatch the resource methods themselves
-(`stripe.checkout.Session.create_async`, etc.), which is stripe-python's own
-documented seam for this style of call.
+Originally built against Stripe; swapped to Dodo Payments (a merchant-of-
+record gateway) because Stripe does not onboard new India-registered
+accounts — a hard block for an India-based merchant trying to verify this
+step at all, not a preference. Dodo's test mode is free and unlimited, same
+as Stripe's, and its Python SDK is a real client object (`AsyncDodoPayments`)
+rather than Stripe-python's per-call `api_key` argument style — so, unlike
+the old Stripe code, this module *does* have a single mockable client seam
+(`get_dodo_client`), matching the pattern already used for Anthropic/OpenAI
+in `llm.py`/`voice.py`.
 
-The webhook-side state mutators (record_checkout_completion,
-apply_subscription_state, reset_usage_period, downgrade_to_free) don't take a
-db session or commit anything — they only mutate an already-session-attached
-Tenant, and app.db.session.get_db commits at the end of the request. That's
-the default for this codebase; only app/services/chat.py deviates, and only
-because it must survive a subsequent step (the Claude call) that can fail.
-Nothing after these runs in the webhook handler, so there's nothing to
-protect against here.
+The webhook-side state mutators (apply_subscription_state, reset_usage_period,
+downgrade_to_free) don't take a db session or commit anything — they only
+mutate an already-session-attached Tenant, and app.db.session.get_db commits
+at the end of the request. That's the default for this codebase; only
+app/services/chat.py deviates, and only because it must survive a subsequent
+step (the Claude call) that can fail. Nothing after these runs in the webhook
+handler, so there's nothing to protect against here.
+
+A real simplification over the Stripe version, found while integrating:
+Dodo's Subscription object carries `metadata` as one of its own persisted
+fields, present on *every* subscription webhook (creation, renewal,
+cancellation — not just a one-time checkout-session payload the way Stripe's
+Session object was). So there's no need for Stripe's separate
+"resolve tenant from the checkout session" vs. "resolve tenant from the
+subscription's customer id" split — one metadata-based lookup, with a
+customer-id fallback, covers every event type here.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import Mapping
 
-import stripe
+from dodopayments import AsyncDodoPayments
+from dodopayments.types.attach_existing_customer_param import AttachExistingCustomerParam
+from dodopayments.types.new_customer_param import NewCustomerParam
+from dodopayments.types.subscription import Subscription
 
 from app.core.config import settings
-from app.models import Tenant
+from app.models import Tenant, User
 from app.models.enums import PlanTier
 
 logger = logging.getLogger(__name__)
@@ -38,122 +53,143 @@ PLAN_QUOTAS: dict[PlanTier, int] = {
     PlanTier.ENTERPRISE: 500_000,
 }
 
-# Which settings field holds each paid plan's Stripe Price ID. FREE is
+# Which settings field holds each paid plan's Dodo Product ID. FREE is
 # deliberately absent — you can't check out into free, only cancel into it.
-_PLAN_PRICE_SETTINGS: dict[PlanTier, str] = {
-    PlanTier.STARTER: "stripe_price_id_starter",
-    PlanTier.PRO: "stripe_price_id_pro",
-    PlanTier.ENTERPRISE: "stripe_price_id_enterprise",
+_PLAN_PRODUCT_SETTINGS: dict[PlanTier, str] = {
+    PlanTier.STARTER: "dodo_product_id_starter",
+    PlanTier.PRO: "dodo_product_id_pro",
+    PlanTier.ENTERPRISE: "dodo_product_id_enterprise",
 }
+
+_client: AsyncDodoPayments | None = None
+
+
+def get_dodo_client() -> AsyncDodoPayments:
+    global _client
+    if _client is None:
+        _client = AsyncDodoPayments(
+            bearer_token=settings.dodo_api_key or "",
+            environment=settings.dodo_environment,
+            webhook_key=settings.dodo_webhook_key or "",
+        )
+    return _client
+
+
+def _reset_client_for_tests() -> None:
+    global _client
+    _client = None
 
 
 class BillingUnavailableError(Exception):
-    """Stripe isn't configured (no secret key), a paid plan has no Price ID
+    """Dodo isn't configured (no API key), a paid plan has no Product ID
     configured, or the requested action needs billing history that doesn't
     exist yet (e.g. a portal session for a tenant that never checked out)."""
 
 
-def _require_secret_key() -> str:
-    if not settings.stripe_secret_key:
-        raise BillingUnavailableError("STRIPE_SECRET_KEY is not configured.")
-    return settings.stripe_secret_key
+def _require_api_key() -> None:
+    if not settings.dodo_api_key:
+        raise BillingUnavailableError("DODO_API_KEY is not configured.")
 
 
-def price_id_for_plan(plan: PlanTier) -> str:
-    if plan not in _PLAN_PRICE_SETTINGS:
-        raise BillingUnavailableError(f"{plan.value} has no Stripe price — it isn't a paid plan.")
-    price_id = getattr(settings, _PLAN_PRICE_SETTINGS[plan])
-    if not price_id:
-        raise BillingUnavailableError(f"No Stripe price ID is configured for the {plan.value} plan.")
-    return price_id
+def product_id_for_plan(plan: PlanTier) -> str:
+    if plan not in _PLAN_PRODUCT_SETTINGS:
+        raise BillingUnavailableError(f"{plan.value} has no Dodo product — it isn't a paid plan.")
+    product_id = getattr(settings, _PLAN_PRODUCT_SETTINGS[plan])
+    if not product_id:
+        raise BillingUnavailableError(f"No Dodo product ID is configured for the {plan.value} plan.")
+    return product_id
 
 
-def plan_for_price_id(price_id: str) -> PlanTier | None:
-    """Reverse lookup — None for a price ID that doesn't match any of this
-    app's configured tiers (e.g. a Price created for something else in the
-    same Stripe account)."""
-    for plan, setting_name in _PLAN_PRICE_SETTINGS.items():
-        if getattr(settings, setting_name) == price_id:
+def plan_for_product_id(product_id: str) -> PlanTier | None:
+    """Reverse lookup — None for a product ID that doesn't match any of this
+    app's configured tiers (e.g. a Product created for something else in the
+    same Dodo account)."""
+    for plan, setting_name in _PLAN_PRODUCT_SETTINGS.items():
+        if getattr(settings, setting_name) == product_id:
             return plan
     return None
 
 
-async def create_checkout_session(tenant: Tenant, plan: PlanTier) -> str:
-    api_key = _require_secret_key()
-    price_id = price_id_for_plan(plan)
+async def create_checkout_session(tenant: Tenant, plan: PlanTier, owner: User) -> str:
+    _require_api_key()
+    product_id = product_id_for_plan(plan)
+    client = get_dodo_client()
 
-    params: dict = dict(
-        api_key=api_key,
-        mode="subscription",
-        line_items=[{"price": price_id, "quantity": 1}],
-        # Belt-and-suspenders: whichever webhook event arrives first,
-        # client_reference_id and metadata both independently identify the
-        # tenant, so neither being unexpectedly absent loses the mapping.
-        client_reference_id=str(tenant.id),
+    # Reuse the existing Dodo Customer if this tenant has one (a returning
+    # customer after a prior cancellation); otherwise Dodo creates a fresh
+    # one from the email/name supplied here. Unlike Stripe, Dodo's checkout
+    # session has no separate "leave customer unset and let it collect an
+    # email on the page" mode for a *new* customer — one of these two shapes
+    # is required.
+    customer: AttachExistingCustomerParam | NewCustomerParam
+    if tenant.dodo_customer_id:
+        customer = AttachExistingCustomerParam(customer_id=tenant.dodo_customer_id)
+    else:
+        customer = NewCustomerParam(email=owner.email, name=owner.full_name or owner.email)
+
+    session = await client.checkout_sessions.create(
+        product_cart=[{"product_id": product_id, "quantity": 1}],
+        customer=customer,
+        # Belt-and-suspenders would be redundant here — see module docstring:
+        # this metadata lands on the Subscription object itself and is present
+        # on every subsequent webhook, not just a one-time checkout payload.
         metadata={"tenant_id": str(tenant.id)},
-        success_url=f"{settings.dashboard_base_url}/billing?checkout=success",
+        return_url=f"{settings.dashboard_base_url}/billing?checkout=success",
         cancel_url=f"{settings.dashboard_base_url}/billing?checkout=cancelled",
     )
-    # Reuse the existing Stripe Customer if this tenant has one (a returning
-    # customer after a prior cancellation) — omitting the key entirely (not
-    # passing customer=None) lets Stripe create a fresh Customer otherwise.
-    if tenant.stripe_customer_id:
-        params["customer"] = tenant.stripe_customer_id
-
-    session = await stripe.checkout.Session.create_async(**params)
-    return session.url
+    return session.checkout_url
 
 
 async def create_portal_session(tenant: Tenant) -> str:
-    api_key = _require_secret_key()
-    if not tenant.stripe_customer_id:
+    _require_api_key()
+    if not tenant.dodo_customer_id:
         raise BillingUnavailableError("This workspace has no billing history yet.")
 
-    session = await stripe.billing_portal.Session.create_async(
-        api_key=api_key,
-        customer=tenant.stripe_customer_id,
+    client = get_dodo_client()
+    session = await client.customers.customer_portal.create(
+        tenant.dodo_customer_id,
         return_url=f"{settings.dashboard_base_url}/billing",
     )
-    return session.url
+    return session.link
 
 
-def construct_webhook_event(payload: bytes, sig_header: str) -> stripe.Event:
-    """Raises stripe.SignatureVerificationError on a bad/forged signature —
-    callers map that to a 400, same as any other malformed request."""
-    if not settings.stripe_webhook_secret:
-        raise BillingUnavailableError("STRIPE_WEBHOOK_SECRET is not configured.")
-    return stripe.Webhook.construct_event(payload, sig_header, settings.stripe_webhook_secret)
+def construct_webhook_event(payload: bytes, headers: Mapping[str, str]):
+    """Raises standardwebhooks.webhooks.WebhookVerificationError on a bad/
+    forged signature — callers map that to a 400, same as any other malformed
+    request. Verified directly against the real SDK (not assumed): a bad
+    `webhook-signature` header raises exactly that exception, confirmed by
+    hand-signing a payload and deliberately corrupting the signature before
+    calling this."""
+    if not settings.dodo_webhook_key:
+        raise BillingUnavailableError("DODO_WEBHOOK_KEY is not configured.")
+    client = get_dodo_client()
+    return client.webhooks.unwrap(payload.decode(), headers=headers)
 
 
-def record_checkout_completion(tenant: Tenant, session: stripe.checkout.Session) -> None:
-    tenant.stripe_customer_id = session.customer
+def apply_subscription_state(tenant: Tenant, subscription: Subscription) -> None:
+    """Syncs customer id/plan/quota/subscription id from a Subscription's
+    product. Deliberately does not touch messages_used_in_period/
+    period_started_at — see reset_usage_period. A subscription can update for
+    reasons unrelated to a billing-cycle renewal, and those shouldn't reset
+    anyone's usage counter.
 
-
-def apply_subscription_state(tenant: Tenant, subscription: stripe.Subscription) -> None:
-    """Syncs plan/quota/subscription id from a Subscription's price.
-
-    Deliberately does not touch messages_used_in_period/period_started_at —
-    see reset_usage_period. A subscription can update for reasons unrelated
-    to a billing-cycle renewal (e.g. a metadata change), and those shouldn't
-    reset anyone's usage counter.
-
-    NOTE: StripeObject subclasses dict, so `subscription["items"]` (not
-    `subscription.items`, which resolves to dict.items the method) is the
-    only correct way to reach the "items" field.
-    """
-    price_id = subscription["items"]["data"][0]["price"]["id"]
-    plan = plan_for_price_id(price_id)
+    Unlike Stripe's StripeObject (which subclasses dict and shadows
+    `.items`), Dodo's Subscription is a plain pydantic model — ordinary
+    attribute access throughout, no dict-method-collision gotcha to work
+    around."""
+    plan = plan_for_product_id(subscription.product_id)
     if plan is None:
         logger.warning(
-            "subscription %s has an unrecognised price %s — leaving tenant %s's plan unchanged",
-            subscription.id,
-            price_id,
+            "subscription %s has an unrecognised product %s — leaving tenant %s's plan unchanged",
+            subscription.subscription_id,
+            subscription.product_id,
             tenant.id,
         )
         return
+    tenant.dodo_customer_id = subscription.customer.customer_id
     tenant.plan = plan
     tenant.monthly_message_quota = PLAN_QUOTAS[plan]
-    tenant.stripe_subscription_id = subscription.id
+    tenant.dodo_subscription_id = subscription.subscription_id
 
 
 def reset_usage_period(tenant: Tenant, period_start: datetime) -> None:
@@ -162,8 +198,9 @@ def reset_usage_period(tenant: Tenant, period_start: datetime) -> None:
 
 
 def downgrade_to_free(tenant: Tenant) -> None:
-    """A cancelled subscription reverts to the free tier — it does not
-    deactivate the tenant (Tenant.is_active is a separate, harsher concept)."""
+    """A cancelled/expired subscription reverts to the free tier — it does
+    not deactivate the tenant (Tenant.is_active is a separate, harsher
+    concept)."""
     tenant.plan = PlanTier.FREE
     tenant.monthly_message_quota = PLAN_QUOTAS[PlanTier.FREE]
-    tenant.stripe_subscription_id = None
+    tenant.dodo_subscription_id = None

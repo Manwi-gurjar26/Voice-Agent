@@ -78,25 +78,25 @@ describe("BillingPage", () => {
   });
 
   it("redirects to the returned Checkout URL on upgrade", async () => {
-    vi.mocked(createCheckoutSession).mockResolvedValue({ url: "https://checkout.stripe.com/xyz" });
+    vi.mocked(createCheckoutSession).mockResolvedValue({ url: "https://checkout.dodopayments.com/xyz" });
     const user = userEvent.setup();
     render(<BillingPage />);
 
     await user.click(screen.getByRole("button", { name: /upgrade to pro/i }));
 
     expect(createCheckoutSession).toHaveBeenCalledWith("pro");
-    await waitFor(() => expect(window.location.href).toBe("https://checkout.stripe.com/xyz"));
+    await waitFor(() => expect(window.location.href).toBe("https://checkout.dodopayments.com/xyz"));
   });
 
   it("redirects to the returned Portal URL on manage billing", async () => {
     currentTenant = makeTenant({ plan: "starter" });
-    vi.mocked(createPortalSession).mockResolvedValue({ url: "https://billing.stripe.com/xyz" });
+    vi.mocked(createPortalSession).mockResolvedValue({ url: "https://customer-portal.dodopayments.com/xyz" });
     const user = userEvent.setup();
     render(<BillingPage />);
 
     await user.click(screen.getByRole("button", { name: /manage billing/i }));
 
-    await waitFor(() => expect(window.location.href).toBe("https://billing.stripe.com/xyz"));
+    await waitFor(() => expect(window.location.href).toBe("https://customer-portal.dodopayments.com/xyz"));
   });
 
   it("shows a toast and re-enables the button when checkout fails to start", async () => {

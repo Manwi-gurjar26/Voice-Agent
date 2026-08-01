@@ -91,15 +91,20 @@ class Settings(BaseSettings):
     max_voice_upload_bytes: int = 10 * 1024 * 1024
 
     # --- Billing (Step 9) ---
-    # Price IDs are created in the merchant's own Stripe dashboard and differ
-    # per environment (test vs live) — never hardcoded. dashboard_base_url is
-    # used to build Checkout success/cancel URLs and the Portal return URL;
-    # nothing before this pointed the backend at the dashboard's own origin.
-    stripe_secret_key: str | None = None
-    stripe_webhook_secret: str | None = None
-    stripe_price_id_starter: str | None = None
-    stripe_price_id_pro: str | None = None
-    stripe_price_id_enterprise: str | None = None
+    # Dodo Payments, not Stripe — Stripe does not onboard new India-registered
+    # accounts, which blocked live verification entirely on a fresh account.
+    # Dodo is a merchant-of-record gateway with the same test/live-mode split
+    # and free sandbox testing. Product IDs are created in the merchant's own
+    # Dodo dashboard and differ per environment — never hardcoded.
+    # dashboard_base_url is used to build Checkout return/cancel URLs and the
+    # Customer Portal return URL; nothing before this pointed the backend at
+    # the dashboard's own origin.
+    dodo_api_key: str | None = None
+    dodo_webhook_key: str | None = None
+    dodo_environment: Literal["test_mode", "live_mode"] = "test_mode"
+    dodo_product_id_starter: str | None = None
+    dodo_product_id_pro: str | None = None
+    dodo_product_id_enterprise: str | None = None
     dashboard_base_url: str = "http://localhost:3000"
 
     # --- Deployment (Step 10) ---

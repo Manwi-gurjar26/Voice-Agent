@@ -192,11 +192,11 @@ describe("api", () => {
 
   it("createCheckoutSession POSTs the plan and returns the Checkout URL", async () => {
     seedAuth();
-    fetchMock.mockResolvedValueOnce(jsonResponse({ url: "https://checkout.stripe.com/test" }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ url: "https://checkout.dodopayments.com/test" }));
 
     const result = await createCheckoutSession("pro");
 
-    expect(result).toEqual({ url: "https://checkout.stripe.com/test" });
+    expect(result).toEqual({ url: "https://checkout.dodopayments.com/test" });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${BASE_URL}/billing/checkout-session`);
     expect(init.method).toBe("POST");
@@ -205,11 +205,11 @@ describe("api", () => {
 
   it("createPortalSession POSTs with no body and returns the Portal URL", async () => {
     seedAuth();
-    fetchMock.mockResolvedValueOnce(jsonResponse({ url: "https://billing.stripe.com/test" }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ url: "https://customer-portal.dodopayments.com/test" }));
 
     const result = await createPortalSession();
 
-    expect(result).toEqual({ url: "https://billing.stripe.com/test" });
+    expect(result).toEqual({ url: "https://customer-portal.dodopayments.com/test" });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${BASE_URL}/billing/portal-session`);
     expect(init.method).toBe("POST");

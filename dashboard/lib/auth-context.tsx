@@ -15,7 +15,7 @@ interface AuthContextValue {
   signup: (payload: SignupRequest) => Promise<void>;
   logout: () => Promise<void>;
   /** Re-fetches user/tenant without touching auth status — used after
-   * returning from Stripe Checkout, since the webhook that updates the
+   * returning from Dodo Checkout, since the webhook that updates the
    * tenant's plan lands asynchronously and the cached context is stale. */
   refresh: () => Promise<void>;
 }

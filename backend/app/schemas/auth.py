@@ -70,8 +70,8 @@ class TenantRead(BaseModel):
     plan: PlanTier
     monthly_message_quota: int
     # Usage-this-period, so the dashboard's billing page needs no second
-    # endpoint. Raw Stripe identifiers are deliberately not exposed here —
-    # the dashboard only needs plan/usage, not Stripe's internal ids.
+    # endpoint. Raw Dodo identifiers are deliberately not exposed here —
+    # the dashboard only needs plan/usage, not Dodo's internal ids.
     messages_used_in_period: int
     period_started_at: datetime
 

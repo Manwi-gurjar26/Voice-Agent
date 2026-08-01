@@ -25,7 +25,10 @@ anthropic>=0.69
 openai>=1.50,<2.0
 
 # --- Billing (Step 9) ---
-stripe>=11,<13
+# Dodo Payments, not Stripe — Stripe does not onboard new India-registered
+# accounts. The [webhooks] extra pulls in standardwebhooks, which
+# client.webhooks.unwrap() uses for signature verification.
+dodopayments[webhooks]>=1.100,<2.0
 
 # --- Deployment (Step 10) ---
 redis>=5.0,<7.0

@@ -1,7 +1,7 @@
 """Tests for rate_limit.py's Redis backend, driven against fakeredis (an
 in-memory Redis emulator) — no real Redis server needed or available in
 this environment. See app/services/billing.py's tests for the analogous
-provider-client monkeypatch pattern used for Stripe."""
+provider-client monkeypatch pattern used for Dodo Payments."""
 
 from __future__ import annotations
 

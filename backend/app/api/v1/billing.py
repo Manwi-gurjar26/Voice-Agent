@@ -1,4 +1,4 @@
-"""Owner-only billing actions: Stripe Checkout and Customer Portal links."""
+"""Owner-only billing actions: Dodo Checkout and Customer Portal links."""
 
 from __future__ import annotations
 
@@ -26,14 +26,14 @@ async def _get_tenant(db: DbSession, tenant_id: uuid.UUID) -> Tenant:
 @router.post(
     "/checkout-session",
     response_model=CheckoutSessionResponse,
-    summary="Start a Stripe Checkout session to upgrade to a paid plan",
+    summary="Start a Dodo Checkout session to upgrade to a paid plan",
 )
 async def create_checkout_session(
-    payload: CheckoutSessionRequest, db: DbSession, tenant_id: TenantId, _: RequireOwner
+    payload: CheckoutSessionRequest, db: DbSession, tenant_id: TenantId, owner: RequireOwner
 ) -> CheckoutSessionResponse:
     tenant = await _get_tenant(db, tenant_id)
     try:
-        url = await billing_service.create_checkout_session(tenant, PlanTier(payload.plan))
+        url = await billing_service.create_checkout_session(tenant, PlanTier(payload.plan), owner)
     except billing_service.BillingUnavailableError as exc:
         raise AppError(
             str(exc), code="billing_unavailable", status_code=status.HTTP_503_SERVICE_UNAVAILABLE
@@ -44,7 +44,7 @@ async def create_checkout_session(
 @router.post(
     "/portal-session",
     response_model=PortalSessionResponse,
-    summary="Get a Stripe Customer Portal link (cancel, downgrade, payment method)",
+    summary="Get a Dodo Customer Portal link (cancel, downgrade, payment method)",
 )
 async def create_portal_session(
     db: DbSession, tenant_id: TenantId, _: RequireOwner
