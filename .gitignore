@@ -16,6 +16,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
+backend/.voice_models/
 
 # Node
 node_modules/

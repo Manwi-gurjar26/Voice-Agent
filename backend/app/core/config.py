@@ -81,13 +81,18 @@ class Settings(BaseSettings):
     max_url_response_bytes: int = 5 * 1024 * 1024
 
     # --- Voice (Step 7) ---
-    # Turn-based STT/TTS via OpenAI — separate provider/key from the Claude
-    # LLM above. voice_enabled is per-agent (see Agent model); this key is
-    # only required for tenants that actually turn it on.
-    openai_api_key: str | None = None
-    voice_stt_model: str = "whisper-1"
-    voice_tts_model: str = "tts-1"
-    voice_default_voice: str = "alloy"
+    # Turn-based STT/TTS via local models (faster-whisper + Piper) — no API
+    # key, no billing, no external account. Originally OpenAI; swapped
+    # because voice is otherwise inherently a paid, metered feature and this
+    # project cannot take on billing of any kind. voice_enabled is per-agent
+    # (see Agent model). voice_stt_model_size is any faster-whisper model
+    # name (tiny/base/small/medium/large-v3) — "base" balances CPU speed
+    # against accuracy for short utterances. voice_models_dir caches
+    # downloaded Piper voice files (~/.onnx + .onnx.json per voice),
+    # downloaded once on first use, same pattern as embedding_model_name.
+    voice_stt_model_size: str = "base"
+    voice_models_dir: str = ".voice_models"
+    voice_default_voice: str = "en_US-lessac-medium"
     max_voice_upload_bytes: int = 10 * 1024 * 1024
 
     # --- Billing (Step 9) ---

@@ -28,7 +28,7 @@ function makeApi(overrides: Partial<ApiClient> = {}): ApiClient {
       transcript: "What are your hours?",
       message: { id: "m_voice", role: "assistant", content: "9 to 5.", citations: null, created_at: "now" },
       audio_base64: "ZmFrZQ==",
-      audio_mime: "audio/mpeg",
+      audio_mime: "audio/wav",
     }),
     ...overrides,
   };

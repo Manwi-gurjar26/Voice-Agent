@@ -149,7 +149,7 @@ describe("createApiClient", () => {
         transcript: "What are your hours?",
         message: { id: "m1", role: "assistant", content: "9 to 5.", citations: null, created_at: "now" },
         audio_base64: "ZmFrZQ==",
-        audio_mime: "audio/mpeg",
+        audio_mime: "audio/wav",
       }),
     );
     const client = createApiClient(BASE_URL, PUBLIC_KEY);

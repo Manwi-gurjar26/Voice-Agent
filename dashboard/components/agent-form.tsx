@@ -254,7 +254,7 @@ export function AgentForm({ mode, defaultValues, onSubmit, submitting, submitLab
               render={({ field }) => (
                 <Select value={field.value || undefined} onValueChange={field.onChange}>
                   <SelectTrigger id="voice_id" className="w-full sm:w-48">
-                    <SelectValue placeholder="Default (alloy)" />
+                    <SelectValue placeholder="Default (en_US-lessac-medium)" />
                   </SelectTrigger>
                   <SelectContent>
                     {ALLOWED_VOICE_IDS.map((voiceId) => (

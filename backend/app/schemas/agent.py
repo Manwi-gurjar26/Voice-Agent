@@ -12,21 +12,17 @@ from app.models.enums import AgentStatus, EffortLevel
 
 MAX_ORIGINS = 50
 
-# OpenAI's fixed TTS voice names (see app/services/voice.py). Validated here,
-# at the boundary, so a bad voice_id surfaces as a normal 422 on agent
-# create/update instead of a runtime TTS API error the next time someone
-# speaks to the widget.
+# Piper voice names (see app/services/voice.py) — a small, verified subset
+# of real voices from https://github.com/rhasspy/piper/blob/master/VOICES.md,
+# each confirmed downloadable before being added here. Validated here, at
+# the boundary, so a bad voice_id surfaces as a normal 422 on agent
+# create/update instead of a failed download the next time someone speaks
+# to the widget.
 ALLOWED_VOICE_IDS = {
-    "alloy",
-    "ash",
-    "ballad",
-    "coral",
-    "echo",
-    "sage",
-    "shimmer",
-    "verse",
-    "marin",
-    "cedar",
+    "en_US-lessac-medium",
+    "en_US-amy-medium",
+    "en_US-ryan-medium",
+    "en_GB-alan-medium",
 }
 
 

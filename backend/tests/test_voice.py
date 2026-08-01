@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from types import SimpleNamespace
 
 from app.core.config import settings
 from app.services import voice
@@ -14,67 +15,49 @@ AUDIO_BYTES = b"pretend-this-is-a-webm-audio-clip"
 
 
 # --------------------------------------------------------------------------
-# Fake OpenAI client — the seam is app.services.voice.get_openai_client,
-# mirrors test_chat.py's install_fake_client for the Anthropic seam.
+# Fake local models — the seams are get_whisper_model/get_piper_voice,
+# mirroring test_chat.py's install_fake_client for the Anthropic seam.
+# Real model behavior (that synthesized audio actually transcribes back to
+# recognizable text) is covered separately in test_voice_models.py.
 # --------------------------------------------------------------------------
-class _FakeTranscription:
-    def __init__(self, text: str) -> None:
-        self.text = text
-
-
-class _FakeAudioResponse:
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-
-    async def aread(self) -> bytes:
-        return self._data
-
-
-class _FakeTranscriptions:
+class FakeWhisperModel:
     def __init__(self, result: str | Exception) -> None:
         self._result = result
-        self.last_kwargs: dict | None = None
+        self.last_audio = None
 
-    async def create(self, **kwargs) -> _FakeTranscription:
-        self.last_kwargs = kwargs
+    def transcribe(self, audio, **kwargs):
+        self.last_audio = audio
         if isinstance(self._result, Exception):
             raise self._result
-        return _FakeTranscription(self._result)
+        segments = [SimpleNamespace(text=self._result)] if self._result.strip() else []
+        return segments, SimpleNamespace(language="en", language_probability=1.0)
 
 
-class _FakeSpeech:
-    def __init__(self, result: bytes | Exception) -> None:
-        self._result = result
-        self.last_kwargs: dict | None = None
+class FakePiperVoice:
+    def __init__(self, fail: Exception | None = None) -> None:
+        self._fail = fail
+        self.last_text: str | None = None
 
-    async def create(self, **kwargs) -> _FakeAudioResponse:
-        self.last_kwargs = kwargs
-        if isinstance(self._result, Exception):
-            raise self._result
-        return _FakeAudioResponse(self._result)
-
-
-class _FakeAudioResource:
-    def __init__(self, transcriptions: _FakeTranscriptions, speech: _FakeSpeech) -> None:
-        self.transcriptions = transcriptions
-        self.speech = speech
-
-
-class FakeOpenAIClient:
-    def __init__(self, transcriptions: _FakeTranscriptions, speech: _FakeSpeech) -> None:
-        self.audio = _FakeAudioResource(transcriptions, speech)
+    def synthesize_wav(self, text, wav_file) -> None:
+        self.last_text = text
+        if self._fail:
+            raise self._fail
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(22050)
+        wav_file.writeframes(b"\x00\x00" * 100)
 
 
 def install_fake_voice_client(
     monkeypatch,
     transcript: str | Exception = "What are your hours?",
-    audio: bytes | Exception = b"FAKE-MP3-BYTES",
-) -> FakeOpenAIClient:
-    transcriptions = _FakeTranscriptions(transcript)
-    speech = _FakeSpeech(audio)
-    fake_client = FakeOpenAIClient(transcriptions, speech)
-    monkeypatch.setattr(voice, "get_openai_client", lambda: fake_client)
-    return fake_client
+    tts_fail: Exception | None = None,
+) -> tuple[FakeWhisperModel, FakePiperVoice]:
+    fake_model = FakeWhisperModel(transcript)
+    fake_voice = FakePiperVoice(fail=tts_fail)
+    monkeypatch.setattr(voice, "get_whisper_model", lambda: fake_model)
+    monkeypatch.setattr(voice, "get_piper_voice", lambda voice_id: fake_voice)
+    return fake_model, fake_voice
 
 
 async def make_voice_conversation(client, session) -> str:
@@ -98,9 +81,7 @@ def post_voice_message(client, conversation_id, session, audio: bytes = AUDIO_BY
 async def test_voice_message_happy_path(client, monkeypatch, db_session):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens, voice_enabled=True)
-    install_fake_voice_client(
-        monkeypatch, transcript="What are your hours?", audio=b"FAKE-MP3-BYTES"
-    )
+    install_fake_voice_client(monkeypatch, transcript="What are your hours?")
     install_fake_client(monkeypatch, chunks=("We're open 9 to 5.",))
 
     conv_id = await make_voice_conversation(client, session)
@@ -111,8 +92,10 @@ async def test_voice_message_happy_path(client, monkeypatch, db_session):
     assert body["transcript"] == "What are your hours?"
     assert body["message"]["role"] == "assistant"
     assert body["message"]["content"] == "We're open 9 to 5."
-    assert body["audio_mime"] == "audio/mpeg"
-    assert base64.b64decode(body["audio_base64"]) == b"FAKE-MP3-BYTES"
+    assert body["audio_mime"] == "audio/wav"
+    # A real WAV file (the fake still runs the real wave-writing code in
+    # voice.py's _synthesize_sync — only get_piper_voice itself is faked).
+    assert base64.b64decode(body["audio_base64"])[:4] == b"RIFF"
 
 
 async def test_voice_message_persists_both_turns(client, monkeypatch, db_session):
@@ -122,7 +105,7 @@ async def test_voice_message_persists_both_turns(client, monkeypatch, db_session
 
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens, voice_enabled=True)
-    install_fake_voice_client(monkeypatch, transcript="hello", audio=b"x")
+    install_fake_voice_client(monkeypatch, transcript="hello")
     install_fake_client(monkeypatch, chunks=("hi there",))
 
     conv_id = await make_voice_conversation(client, session)
@@ -178,7 +161,7 @@ async def test_empty_transcript_is_rejected(client, monkeypatch, db_session):
 async def test_transcription_failure_maps_to_a_clean_error(client, monkeypatch, db_session):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens, voice_enabled=True)
-    install_fake_voice_client(monkeypatch, transcript=RuntimeError("openai is down"))
+    install_fake_voice_client(monkeypatch, transcript=RuntimeError("decoder crashed"))
 
     conv_id = await make_voice_conversation(client, session)
     response = await post_voice_message(client, conv_id, session)
@@ -207,7 +190,7 @@ async def test_tts_failure_still_returns_the_text_reply(client, monkeypatch, db_
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens, voice_enabled=True)
     install_fake_voice_client(
-        monkeypatch, transcript="hello", audio=RuntimeError("tts provider down")
+        monkeypatch, transcript="hello", tts_fail=RuntimeError("synth crashed")
     )
     install_fake_client(monkeypatch, chunks=("hi there",))
 
@@ -285,9 +268,17 @@ async def test_unknown_conversation_id_is_404(client, monkeypatch, db_session):
     assert response.status_code == 404
 
 
-async def test_voice_unavailable_when_no_api_key_configured(client, monkeypatch, db_session):
-    monkeypatch.setattr(settings, "openai_api_key", None)
-    voice._reset_client_for_tests()
+async def test_voice_unavailable_when_model_fails_to_load(client, monkeypatch, db_session):
+    """No API key exists to unset anymore — the local equivalent of "voice
+    unavailable" is a model failing to load (e.g. no internet on a cold
+    cache). Simulated directly at the seam rather than actually breaking
+    network access, which the real get_whisper_model already translates
+    into VoiceUnavailableError (see its except clause)."""
+
+    def _raise():
+        raise voice.VoiceUnavailableError("model unavailable")
+
+    monkeypatch.setattr(voice, "get_whisper_model", _raise)
 
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens, voice_enabled=True)

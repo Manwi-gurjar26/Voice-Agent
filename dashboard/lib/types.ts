@@ -9,19 +9,13 @@ export type UserRole = "owner" | "admin" | "member";
 export type AgentStatus = "draft" | "active" | "disabled";
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
-// OpenAI's fixed TTS voice names — mirrors ALLOWED_VOICE_IDS in
+// Local Piper voice names — mirrors ALLOWED_VOICE_IDS in
 // backend/app/schemas/agent.py.
 export const ALLOWED_VOICE_IDS = [
-  "alloy",
-  "ash",
-  "ballad",
-  "coral",
-  "echo",
-  "sage",
-  "shimmer",
-  "verse",
-  "marin",
-  "cedar",
+  "en_US-lessac-medium",
+  "en_US-amy-medium",
+  "en_US-ryan-medium",
+  "en_GB-alan-medium",
 ] as const;
 export type VoiceId = (typeof ALLOWED_VOICE_IDS)[number];
 

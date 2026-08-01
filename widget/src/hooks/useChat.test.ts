@@ -46,7 +46,7 @@ function makeApi(overrides: Partial<ApiClient> = {}): ApiClient {
       transcript: "hello",
       message: { id: "m_voice", role: "assistant", content: "hi there", citations: null, created_at: "now" },
       audio_base64: "ZmFrZQ==",
-      audio_mime: "audio/mpeg",
+      audio_mime: "audio/wav",
     } satisfies VoiceReplyResponse),
     ...overrides,
   };
@@ -350,7 +350,7 @@ describe("useChat", () => {
           transcript: "hello",
           message: { id: "m1", role: "assistant", content: "hi", citations: null, created_at: "now" },
           audio_base64: "",
-          audio_mime: "audio/mpeg",
+          audio_mime: "audio/wav",
         } satisfies VoiceReplyResponse),
       });
       const { result } = renderHook(() => useChat(api, PUBLIC_KEY));
@@ -393,7 +393,7 @@ describe("useChat", () => {
             transcript: "hello",
             message: { id: "m1", role: "assistant", content: "hi", citations: null, created_at: "now" },
             audio_base64: "",
-            audio_mime: "audio/mpeg",
+            audio_mime: "audio/wav",
           } satisfies VoiceReplyResponse);
         }),
       });
@@ -474,7 +474,7 @@ describe("useChat", () => {
           transcript: "hello",
           message: { id: "m1", role: "assistant", content: "hi", citations: null, created_at: "now" },
           audio_base64: "",
-          audio_mime: "audio/mpeg",
+          audio_mime: "audio/wav",
         });
         await Promise.resolve();
       });

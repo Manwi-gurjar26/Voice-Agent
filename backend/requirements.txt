@@ -22,7 +22,13 @@ pyjwt>=2.10,<3.0
 anthropic>=0.69
 
 # --- Voice (Step 7) ---
-openai>=1.50,<2.0
+# Local, free STT/TTS — no API key, no billing. Originally OpenAI Whisper +
+# tts-1; swapped because voice is otherwise inherently a paid, metered
+# feature. faster-whisper downloads its Whisper model from Hugging Face on
+# first use (same pattern as sentence-transformers below); piper-tts
+# downloads its voice models the same way via piper.download_voices.
+faster-whisper>=1.2,<2.0
+piper-tts>=1.6,<2.0
 
 # --- Billing (Step 9) ---
 # Dodo Payments, not Stripe — Stripe does not onboard new India-registered

@@ -465,14 +465,42 @@ pipeline as typed messages → speak the reply. A continuously-listening,
 interruptible voice call (streaming STT, voice-activity detection, barge-in)
 is a materially larger effort and was deliberately left out of this step.
 
-**One provider for both directions.** OpenAI (Whisper for STT, `tts-1` for
-TTS) — one new API key (`OPENAI_API_KEY`), one new SDK dependency, both
-optional at the settings level since voice is opt-in per agent.
-`Agent.voice_id` (present since the initial schema, unused until now) is
-validated against OpenAI's fixed voice names at the API boundary
-(`ALLOWED_VOICE_IDS` in `app/schemas/agent.py`), the same "reject a bad value
-at create/update time, not at the next spoken reply" pattern the origin
-allowlist already uses.
+**Update: swapped to fully local, free STT/TTS — no API key, no billing,
+ever.** Originally OpenAI (Whisper for STT, `tts-1` for TTS). Voice is
+otherwise the one feature in this whole platform that structurally requires
+a paid, metered API, and this project cannot take on any billing — so
+`app/services/voice.py` now runs `faster-whisper` (a CTranslate2-based local
+Whisper implementation) for STT and Piper (a fast local neural TTS engine)
+for TTS, both entirely on CPU with zero network calls after their model
+files are cached once. This is not a new architectural idea for this
+codebase — it's the exact pattern `app/services/embeddings.py` already used
+for RAG in Step 5 (a local `sentence-transformers` model instead of a hosted
+API), just applied to voice. `Agent.voice_id` is now validated against a
+small set of real Piper voice names (`ALLOWED_VOICE_IDS` in
+`app/schemas/agent.py`) — `en_US-lessac-medium`, `en_US-amy-medium`,
+`en_US-ryan-medium`, `en_GB-alan-medium` — each individually confirmed
+downloadable before being added, not assumed from Piper's voice list.
+
+**A real client-object seam, unlike the old OpenAI code's shared one.**
+`voice.py` now has two independent seams, `get_whisper_model()` and
+`get_piper_voice(voice_id)`, rather than one shared client — STT and TTS are
+two unrelated local models with no client object in common, unlike OpenAI's
+single `AsyncOpenAI` instance serving both. Both are lazily constructed and
+cached (Piper per voice ID, since an agent can pick any of the four), and
+both wrap model construction in a try/except that raises
+`VoiceUnavailableError` — the local equivalent of the old "no API key
+configured" condition, now covering a genuinely different failure mode (a
+cold cache with no internet on first run) rather than a missing credential.
+
+**Decoding is format-agnostic, unlike the old filename-hint approach.**
+OpenAI's transcription API used the uploaded filename's extension as a
+format hint; faster-whisper instead decodes directly from a byte stream via
+PyAV (bundled ffmpeg, no system dependency to install), so `transcribe_audio`
+no longer takes or needs a `filename` argument at all — confirmed against
+the *exact* format the widget really sends, not assumed: a WAV file was
+re-encoded to WebM/Opus with PyAV by hand (matching `voiceCapture.ts`'s real
+`MediaRecorder` output) and decoded correctly straight from an in-memory
+`BytesIO`, no temp file.
 
 **The voice endpoint reuses the text pipeline's guts, not a parallel one.**
 `chat_service.stream_turn` (SSE, for typed messages) and the new
@@ -515,32 +543,38 @@ capped recording without the user having to tap stop again. `useChat`'s new
 retry-once-then-friendly-banner logic (`withSessionRetry`, factored out of
 what was previously `sendMessage`-only code) as typed messages.
 
-**Testing.** Backend: 14 new tests (`test_voice.py`) covering the happy
-path, `voice_enabled=false` rejection, oversized uploads, empty transcripts,
-transcription/LLM/TTS provider failures, quota exhaustion, missing/wrong
-session or origin, and the new preflight route — full suite now 201 tests,
-all passing, Claude and OpenAI both faked at their respective client seams
-(`get_anthropic_client` / `get_openai_client`), no real API keys needed to
-run it. Widget: 27 new tests across `voiceCapture.test.ts` (a fake
-`MediaRecorder`/`getUserMedia`, including the auto-stop-cap and
-cancel-never-resolves cases), `MicButton.test.tsx`, new `useChat.test.ts`
-cases mirroring the existing text-send tests, and one `App.test.tsx`
-integration test that drives an actual tap-to-record-tap-to-stop cycle
-through the real component tree and asserts on `HTMLMediaElement.play` —
-full widget suite now 87 tests, gzip size 12.06 kB (up from 10.42 kB).
+**Testing.** Backend: 14 tests (`test_voice.py`) covering the happy path,
+`voice_enabled=false` rejection, oversized uploads, empty transcripts,
+transcription/LLM/TTS failures, quota exhaustion, missing/wrong session or
+origin, and the preflight route — `get_whisper_model`/`get_piper_voice`
+faked at their seams, no real model load needed to run these, matching the
+existing `get_anthropic_client` fake-seam pattern. A dedicated
+`test_voice_models.py` (1 test, mirroring `test_embeddings.py`'s role for
+the RAG embedding model) runs the *real* Whisper and Piper models with no
+mocking at all — full suite now 230 tests. Widget: unchanged by this swap
+(27 pre-existing voice tests still pass) — the widget only ever dealt with
+recording and playing back audio, never which provider transcribed or
+synthesized it; `audio_mime` in its test fixtures was updated from
+`audio/mpeg` to `audio/wav` for accuracy, not because any widget logic
+changed (`decodeAudioToUrl` already builds its `Blob` from whatever mime the
+backend sends, with no format-specific branching).
 
-**Live verification, partial, and why.** Both OpenAI and Anthropic require
-billing/credits on the account before the API accepts any request — this
-project's Anthropic key was swapped out for testing, and the OpenAI account
-in use doesn't have billing configured yet. Rather than fabricate results,
-live verification here stopped at confirming `OPENAI_API_KEY` is read
-correctly and that a real request reaches OpenAI (a `429 insufficient_quota`
-response, not an auth or code error). The full `synthesize_speech` →
-`transcribe_audio` round trip, and the endpoint-level test through a real
-`/voice-messages` call, are deferred until billing is set up on at least one
-account — the same "state what was and wasn't verified" disclosure as Step
-6's browser-automation gap, not a claim that this was fully exercised
-end-to-end against live providers.
+**Live verification: complete for what this swap actually owns, honestly
+partial for what it doesn't.** `test_voice_models.py` proves the core claim
+for free: real Piper-synthesized speech, decoded by real faster-whisper, at
+CPU speed, no network calls, matching "What can you help me with today?"
+back exactly. Beyond the automated suite, a real signed-up tenant, a real
+voice-enabled agent (`voice_id: en_US-lessac-medium`), and a real recording
+of "What are your business hours?" were sent through the actual running
+`/voice-messages` endpoint against a live server — the backend log shows
+`faster_whisper: Detected language 'en' with probability 0.99` and the
+exact transcribed text reaching the Claude request payload, byte for byte.
+That request then failed with the same pre-existing `llm_error` documented
+in Step 4/6 (no billed `ANTHROPIC_API_KEY` in this environment) — a Step 4
+dependency this swap never touched, not a new gap. **Voice's own paid-API
+dependency is now fully eliminated and fully verified; a complete
+spoken-question-to-spoken-answer demo still needs a working Anthropic key,**
+exactly as it would for a *typed* question, and for the same reason.
 
 ## Dashboard (Step 8)
 
@@ -660,8 +694,10 @@ proration, or usage-based pricing was built.
 **Built against Dodo Payments, not Stripe — a hard block, not a preference.**
 Stripe does not onboard new India-registered accounts, which made it
 impossible to even get a test-mode key for this step on an India-based
-account — not a missing-credit-card problem like voice's OpenAI gap, a
-signup problem. Dodo Payments is a merchant-of-record gateway available to
+account — a signup problem, not a missing-credit-card one (that category of
+problem is what voice's original OpenAI billing gap was, before Step 7's
+local-model swap eliminated it entirely). Dodo Payments is a
+merchant-of-record gateway available to
 India-based merchants, with the same free, unlimited test-mode guarantee as
 Stripe's. The swap touched `app/services/billing.py`, the webhook handler
 (renamed `webhooks_stripe.py` → `webhooks_dodo.py`), `Tenant`'s
