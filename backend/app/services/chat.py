@@ -1,4 +1,4 @@
-"""Conversation creation, message persistence, and the Claude streaming turn."""
+"""Conversation creation, message persistence, and the Gemini streaming turn."""
 
 from __future__ import annotations
 
@@ -8,12 +8,14 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
+from google.genai import types
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import AppError, NotFoundError, QuotaExceededError
 from app.models import Agent, Chunk, Conversation, Message
+from app.models.enums import EffortLevel
 from app.models.widget_session import WidgetSession
 from app.services import embeddings, llm
 from app.services.quota import check_and_consume_quota
@@ -21,10 +23,28 @@ from app.services.retrieval import agent_has_chunks, find_relevant_chunks
 
 logger = logging.getLogger(__name__)
 
-# Defensive cap on how much history we load and resend to Claude per turn —
-# not a product-facing pagination limit. A conversation this long is already
-# unusual; this exists so one doesn't grow the request payload unboundedly.
+# Defensive cap on how much history we load and resend to the model per turn
+# — not a product-facing pagination limit. A conversation this long is
+# already unusual; this exists so one doesn't grow the request payload
+# unboundedly.
 MAX_HISTORY_MESSAGES = 500
+
+# Gemini's thinking_budget is a raw token count, not a named level — these
+# values span what gemini-2.5 flash/pro both support. 128 (not 0) is the
+# floor because gemini-2.5-pro cannot fully disable thinking (only flash
+# accepts 0), so `low` stays safe regardless of which model an agent is
+# configured with. EffortLevel itself is unchanged from the Claude version
+# (see its docstring) — only this mapping is new.
+_THINKING_BUDGET_BY_EFFORT: dict[EffortLevel, int] = {
+    EffortLevel.LOW: 128,
+    EffortLevel.MEDIUM: 2048,
+    EffortLevel.HIGH: 8192,
+    EffortLevel.XHIGH: 16384,
+    EffortLevel.MAX: 24576,
+}
+
+# This app stores "assistant"; Gemini's API expects "model".
+_GEMINI_ROLE = {"user": "user", "assistant": "model"}
 
 
 def _sse(event: str, data: dict) -> str:
@@ -74,23 +94,28 @@ async def list_messages(db: AsyncSession, conversation: Conversation) -> list[Me
     return list(rows)
 
 
-def _build_claude_messages(history: list[Message]) -> list[dict]:
-    """Collapse consecutive same-role rows into alternating API turns.
+def _build_gemini_contents(history: list[Message]) -> list[types.Content]:
+    """Collapse consecutive same-role rows into alternating API turns, then
+    map this app's stored roles (user/assistant) to Gemini's (user/model).
 
     Rows are normally already alternating — one user message triggers exactly
-    one persisted assistant reply — but if a prior turn's Claude call failed
+    one persisted assistant reply — but if a prior turn's Gemini call failed
     after the user message was saved (see stream_turn), the next user message
-    lands right after another user row. Claude's API rejects non-alternating
+    lands right after another user row. Gemini's API rejects non-alternating
     roles outright, so this merges runs of the same role into a single turn
-    rather than 400ing on the very next message after any failure.
+    rather than erroring on the very next message after any failure.
     """
     turns: list[dict] = []
     for row in history:
-        if turns and turns[-1]["role"] == row.role:
-            turns[-1]["content"] += f"\n\n{row.content}"
+        role = _GEMINI_ROLE[row.role]
+        if turns and turns[-1]["role"] == role:
+            turns[-1]["text"] += f"\n\n{row.content}"
         else:
-            turns.append({"role": row.role, "content": row.content})
-    return turns
+            turns.append({"role": role, "text": row.content})
+    return [
+        types.Content(role=turn["role"], parts=[types.Part.from_text(text=turn["text"])])
+        for turn in turns
+    ]
 
 
 def _augment_system_prompt(base_prompt: str, chunks: list[Chunk]) -> str:
@@ -123,15 +148,25 @@ def _citations_from_chunks(chunks: list[Chunk]) -> list[dict] | None:
     return list(seen.values())
 
 
+def _generation_config(agent: Agent, system_prompt: str) -> types.GenerateContentConfig:
+    return types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        max_output_tokens=agent.max_output_tokens,
+        thinking_config=types.ThinkingConfig(
+            thinking_budget=_THINKING_BUDGET_BY_EFFORT[agent.effort]
+        ),
+    )
+
+
 async def _prepare_turn(
     db: AsyncSession, conversation: Conversation, agent: Agent, user_content: str
-) -> tuple[str, list[dict], list[Chunk]]:
+) -> tuple[str, list[types.Content], list[Chunk]]:
     """Shared prep for both stream_turn and complete_turn: enforce quota,
-    persist the user message, run retrieval, and build the Claude message
+    persist the user message, run retrieval, and build the Gemini contents
     list. Raises QuotaExceededError (already rolled back) on quota failure —
     callers decide how to surface that (an SSE event vs a JSON error).
 
-    Quota is consumed *before* calling Claude, unconditionally, with no
+    Quota is consumed *before* calling Gemini, unconditionally, with no
     refund if the call then fails. That's a deliberate cost-control choice,
     not an oversight: origin allowlisting (Step 3) can't stop a scripted
     client with a valid public_key from forging requests, so the quota
@@ -148,7 +183,7 @@ async def _prepare_turn(
     db.add(user_message)
     conversation.last_message_at = datetime.now(timezone.utc)
     # Commit now, not just at end-of-request: the user's message and their
-    # quota consumption must survive even if the Claude call below fails.
+    # quota consumption must survive even if the Gemini call below fails.
     await db.commit()
 
     # Retrieval: skip the embedding call entirely if this agent has no
@@ -171,20 +206,20 @@ async def _prepare_turn(
     )
 
     history = await list_messages(db, conversation)
-    claude_messages = _build_claude_messages(history)
-    return system_prompt, claude_messages, relevant_chunks
+    gemini_contents = _build_gemini_contents(history)
+    return system_prompt, gemini_contents, relevant_chunks
 
 
 async def stream_turn(
     db: AsyncSession, conversation: Conversation, agent: Agent, user_content: str
 ) -> AsyncIterator[str]:
-    """Persist the user message, enforce quota, call Claude, and stream SSE.
+    """Persist the user message, enforce quota, call Gemini, and stream SSE.
 
     Yields SSE-formatted (`event: ...\\ndata: ...\\n\\n`) chunks — pass this
     directly to `StreamingResponse(..., media_type="text/event-stream")`.
     """
     try:
-        system_prompt, claude_messages, relevant_chunks = await _prepare_turn(
+        system_prompt, gemini_contents, relevant_chunks = await _prepare_turn(
             db, conversation, agent, user_content
         )
     except QuotaExceededError as exc:
@@ -192,21 +227,21 @@ async def stream_turn(
         return
 
     accumulated = ""
+    final_chunk: types.GenerateContentResponse | None = None
     try:
-        client = llm.get_anthropic_client()
-        async with client.messages.stream(
+        client = llm.get_gemini_client()
+        stream = await client.aio.models.generate_content_stream(
             model=agent.model,
-            max_tokens=agent.max_output_tokens,
-            system=system_prompt,
-            messages=claude_messages,
-            output_config={"effort": agent.effort},
-        ) as stream:
-            async for text in stream.text_stream:
-                accumulated += text
-                yield _sse("delta", {"text": text})
-            final = await stream.get_final_message()
+            contents=gemini_contents,
+            config=_generation_config(agent, system_prompt),
+        )
+        async for chunk in stream:
+            if chunk.text:
+                accumulated += chunk.text
+                yield _sse("delta", {"text": chunk.text})
+            final_chunk = chunk
     except Exception:
-        logger.exception("Claude call failed for conversation %s", conversation.id)
+        logger.exception("Gemini call failed for conversation %s", conversation.id)
         yield _sse(
             "error",
             {
@@ -216,13 +251,22 @@ async def stream_turn(
         )
         return
 
+    usage = final_chunk.usage_metadata if final_chunk is not None else None
+    input_tokens = usage.prompt_token_count if usage else 0
+    output_tokens = usage.candidates_token_count if usage else 0
+    finish_reason = (
+        final_chunk.candidates[0].finish_reason
+        if final_chunk is not None and final_chunk.candidates
+        else None
+    )
+
     citations = _citations_from_chunks(relevant_chunks)
     assistant_message = Message(
         conversation_id=conversation.id,
         role="assistant",
         content=accumulated,
-        input_tokens=final.usage.input_tokens,
-        output_tokens=final.usage.output_tokens,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         citations=citations,
     )
     db.add(assistant_message)
@@ -233,10 +277,10 @@ async def stream_turn(
         "done",
         {
             "message_id": str(assistant_message.id),
-            "stop_reason": final.stop_reason,
+            "stop_reason": finish_reason.value if finish_reason is not None else None,
             "usage": {
-                "input_tokens": final.usage.input_tokens,
-                "output_tokens": final.usage.output_tokens,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
             },
             "citations": citations or [],
         },
@@ -253,39 +297,36 @@ async def complete_turn(
     response, not a stream.
     """
     try:
-        system_prompt, claude_messages, relevant_chunks = await _prepare_turn(
+        system_prompt, gemini_contents, relevant_chunks = await _prepare_turn(
             db, conversation, agent, user_content
         )
     except QuotaExceededError as exc:
         raise AppError(exc.message, code=exc.code, status_code=exc.status_code) from exc
 
     try:
-        client = llm.get_anthropic_client()
-        final = await client.messages.create(
+        client = llm.get_gemini_client()
+        response = await client.aio.models.generate_content(
             model=agent.model,
-            max_tokens=agent.max_output_tokens,
-            system=system_prompt,
-            messages=claude_messages,
-            output_config={"effort": agent.effort},
+            contents=gemini_contents,
+            config=_generation_config(agent, system_prompt),
         )
     except Exception as exc:
-        logger.exception("Claude call failed for conversation %s", conversation.id)
+        logger.exception("Gemini call failed for conversation %s", conversation.id)
         raise AppError(
             "The assistant is temporarily unavailable. Please try again.",
             code="llm_error",
             status_code=502,
         ) from exc
 
-    accumulated = "".join(
-        block.text for block in final.content if getattr(block, "type", None) == "text"
-    )
+    accumulated = response.text or ""
+    usage = response.usage_metadata
     citations = _citations_from_chunks(relevant_chunks)
     assistant_message = Message(
         conversation_id=conversation.id,
         role="assistant",
         content=accumulated,
-        input_tokens=final.usage.input_tokens,
-        output_tokens=final.usage.output_tokens,
+        input_tokens=usage.prompt_token_count if usage else 0,
+        output_tokens=usage.candidates_token_count if usage else 0,
         citations=citations,
     )
     db.add(assistant_message)

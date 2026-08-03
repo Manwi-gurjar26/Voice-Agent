@@ -5,7 +5,7 @@ website with a single `<script>` tag.
 
 ```
 ┌─ Customer's website ─┐      ┌─ This platform ────────────────────────┐
-│  <script src=...>    │─────▶│  Public API   →  Chat/RAG  →  Claude   │
+│  <script src=...>    │─────▶│  Public API   →  Chat/RAG  →  Gemini   │
 │  floating widget     │◀─────│  (per-agent origin allowlist)          │
 └──────────────────────┘      │                                        │
                               │  Dashboard API  ←  Next.js dashboard   │
@@ -111,10 +111,9 @@ customer's page source and is not a credential. Authorisation for the public
 widget API is the agent's `allowed_origins` allowlist plus rate limiting. An
 empty allowlist denies everything — an unconfigured agent is not embeddable.
 
-**No `temperature`.** Current Claude models (Opus 5, Sonnet 5, Opus 4.7+)
-reject `temperature`, `top_p`, and `top_k` with a 400. Agents store an
-`effort` level (`low`…`max`), which is the supported control for reasoning
-depth and token spend.
+**No `temperature`.** Agents store an `effort` level (`low`…`max`) instead,
+which maps to Gemini's `thinking_config.thinking_budget` (a token count) —
+one reasoning-depth/token-spend knob per agent, not three separate ones.
 
 **One error shape.** Every failure, including unhandled exceptions, returns
 `{"error": {"code": ..., "message": ...}}`. The widget runs on third-party
@@ -183,28 +182,32 @@ in `app/api/v1/public.py` run the exact same `resolve_public_agent`
 dependency as the real request, so preflight is byte-for-byte the same code
 path: automatically test-override-safe and always on the correct event loop.
 
-**No `temperature` here either — `effort` flows straight through.** The chat
-pipeline calls Claude with `output_config={"effort": agent.effort}` and no
-`temperature`/`top_p`/`top_k` at all, matching the model schema decision from
-Step 1. `thinking` is left unset (Claude Opus 5 defaults to adaptive thinking
-on its own); streaming uses the SDK's `stream.text_stream`, which yields text
-content only — thinking-block deltas never reach the widget.
+**No `temperature` here either — `effort` flows straight through as a
+thinking budget.** The chat pipeline calls Gemini with
+`thinking_config=ThinkingConfig(thinking_budget=N)`, where N is looked up
+from `agent.effort` via a small fixed table in `app/services/chat.py`
+(`low`→128 … `max`→24576) — no `temperature`/`top_p`/`top_k` at all. 128
+(not 0) is the floor for `low` because gemini-2.5-pro can't fully disable
+thinking the way flash can; this keeps `low` safe regardless of which Gemini
+model an agent is configured with. Streaming uses the SDK's
+`generate_content_stream`, iterating chunks' `.text` — thinking-token deltas
+never reach the widget.
 
-**Quota is consumed before calling Claude, with no refund on failure.**
+**Quota is consumed before calling Gemini, with no refund on failure.**
 Because origin allowlisting can't stop a scripted client with a valid
 `public_key` from forging requests (see above), the quota counter has to
 reflect attempted usage, not just successful usage — otherwise a client could
 bypass it by triggering (and abandoning) failing calls. The row is locked
 (`SELECT ... FOR UPDATE`) only for the increment itself, not for the whole
-Claude call, so a busy tenant's other agents/visitors aren't serialized
+Gemini call, so a busy tenant's other agents/visitors aren't serialized
 behind one slow response.
 
-**A failed Claude call must not corrupt the next turn's history.** The
-user's message is persisted and committed *before* calling Claude, so it
+**A failed Gemini call must not corrupt the next turn's history.** The
+user's message is persisted and committed *before* calling Gemini, so it
 survives a failed call — but that leaves a lone unanswered user message in
-the conversation. The Claude API rejects non-alternating roles outright, so
-the next user message would 400 the following turn if sent naively.
-`_build_claude_messages` in `app/services/chat.py` collapses consecutive
+the conversation. Gemini's API rejects non-alternating roles outright, so
+the next user message would error the following turn if sent naively.
+`_build_gemini_contents` in `app/services/chat.py` collapses consecutive
 same-role rows into one API turn, so a prior failure never breaks the next
 message — covered by a dedicated test that deliberately fails a turn first.
 
@@ -221,22 +224,37 @@ running a real `uvicorn.Server` on a real loopback socket, in-process, so a
 future change that actually breaks streaming (e.g. swapping out
 `BaseHTTPMiddleware`) still gets caught by the automated suite.
 
-**The Anthropic client is a single mockable seam.** `app.services.llm.get_anthropic_client()`
-is the *only* place `AsyncAnthropic(...)` gets constructed. Tests monkeypatch
-this one function to a fake client shaped like the real SDK's stream object
-(`text_stream` + `get_final_message()`); production code is never touched.
-This was also verified against the *real* SDK, not just the fake: a live
-request with no `ANTHROPIC_API_KEY` configured produced the real SDK's actual
-`TypeError` ("Could not resolve authentication method..."), which
-`stream_turn`'s broad exception handler caught and turned into a clean SSE
-error event — logged server-side with a full traceback and request-id
-correlation, never a 500 or a crash.
+**The Gemini client is a single mockable seam.** `app.services.llm.get_gemini_client()`
+is the *only* place `genai.Client(...)` gets constructed. Tests monkeypatch
+this one function to a fake client shaped like the real SDK's `aio.models`
+resource (`generate_content_stream` + `generate_content`); production code
+is never touched. This was also verified against the *real* SDK, not just
+the fake: `genai.Client(api_key=None)` (or an empty string) raises a `ValueError`
+("No API key was provided...") **immediately at construction**, unlike
+Anthropic's client, which only fails on the first real request. Since
+`get_gemini_client()` is called from inside `stream_turn`/`complete_turn`'s
+existing broad exception handler, that construction-time `ValueError` lands
+in exactly the same place a request-time failure would — a clean SSE `error`
+event or `AppError`, never a 500 or a crash, with a full traceback logged
+server-side.
+
+**Originally Claude, swapped to Gemini for cost, not capability.** The chat
+pipeline was first built against Anthropic's Claude. It was swapped to
+Google Gemini because this project cannot take on any paid API cost, and
+unlike Claude, Gemini has a genuinely free tier (Google AI Studio, no card
+required) — sufficient for testing with real early users before any billing
+is turned on. `EffortLevel` (`low`…`max`), the streaming-vs-non-streaming
+split, `_prepare_turn`'s quota/retrieval/history-building sequence, and the
+whole client-seam pattern all carried over unchanged; only the request/
+response shape talking to the provider changed (see `app/services/chat.py`
+and `app/services/llm.py`). This is the one dependency in the whole platform
+still requiring a real (if free) API key — see the chat pipeline's own
+setup note for how to get one.
 
 **Known limitation: no prompt caching yet.** `system_prompt` is sent as a
-plain string on every turn, not wrapped in a `cache_control` block. For a
-long multi-turn conversation this resends (and re-bills) the full system
-prompt every time. Deliberately deferred — Anthropic's prompt-caching
-semantics (breakpoints, TTL, the 20-block lookback window) are real
+plain string on every turn, not wrapped in a cached-content block. For a
+long multi-turn conversation this resends the full system prompt every time.
+Deliberately deferred — implicit/explicit caching semantics are real
 complexity worth its own focused pass rather than folding into an
 already-large step. Revisit as a cost optimization once there's real traffic.
 
@@ -259,7 +277,7 @@ the pipeline.
 default.** `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions) runs on
 CPU, no API key, no per-token cost. `app/services/embeddings.py` is the one
 mockable seam (`embed_texts`/`embed_query`), matching the pattern already
-established for the Anthropic client — tests monkeypatch it with
+established for the Gemini client — tests monkeypatch it with
 deterministic vectors; one dedicated test (`test_embeddings.py`) uses the
 *real* model to prove the actual production path (config → model load →
 encode → normalize) produces sensible results, e.g. that a question about
@@ -308,7 +326,7 @@ sentence-transformers model, and full document ingestion were each verified
 live: a hand-crafted (but genuinely valid — confirmed against pypdf
 directly) PDF proves real PDF extraction works, not a mock of the library;
 a live server ingested a real return-policy document with the real
-embedding model and the resulting system prompt sent to Claude — visible in
+embedding model and the resulting system prompt sent to the LLM — visible in
 the request-debug log, the same mechanism that caught Step 4's
 missing-API-key path — correctly included the retrieved excerpt for a
 question that never mentioned the document by name ("How many days do I
@@ -416,9 +434,12 @@ validation, conversation creation, sending a message and reading the SSE
 response, listing message history, and both an allowed and a rejected
 `Origin`. Every response matched what `types.ts` and `sse.ts` expect
 byte-for-byte, including the graceful `event: error` /
-`{"code": "llm_error", ...}` path with no `ANTHROPIC_API_KEY` configured —
-the same failure mode already covered by the backend's own live-server
-tests.
+`{"code": "llm_error", ...}` path with no LLM API key configured — the same
+failure mode already covered by the backend's own live-server tests. (This
+pass predates the Claude → Gemini swap; the specific missing-key exception
+type changed — see the chat-pipeline section above — but the resulting
+clean-SSE-error behavior this test actually checks did not, since both land
+in the same broad exception handler.)
 
 **Update: the real-browser gap above is now closed.** Playwright (Chromium,
 installed fresh into a scratch npm project — no admin rights or Docker
@@ -432,14 +453,15 @@ handling was needed to find `.va-launcher` inside the widget's shadow DOM.
 Confirmed in the real DOM, with screenshots: the launcher mounts and renders
 correctly on a simulated host page, clicking it opens the panel with the
 agent's real greeting, a typed message sends and appears as a user bubble,
-and — since this environment still has no billed `ANTHROPIC_API_KEY` — the
-same `TypeError` from the Anthropic SDK seen in backend logs surfaces
-exactly as the widget's `ErrorBanner` component ("The assistant is
-temporarily unavailable...") rather than a broken UI or a hang. What's
-still not covered by this pass: voice/mic (`getUserMedia` in a headless
-browser is its own can of worms) and a genuine successful Claude reply
-rendering and streaming into the DOM (blocked on the same missing-API-key
-gap as Step 7's live voice verification). The jsdom-based `App.test.tsx`
+and — since this environment had no billed LLM API key at the time — the
+same missing-key error seen in backend logs surfaced exactly as the widget's
+`ErrorBanner` component ("The assistant is temporarily unavailable...")
+rather than a broken UI or a hang. (This pass predates the Claude → Gemini
+swap; not yet re-run against Gemini specifically.) What's still not covered
+by this pass: voice/mic (`getUserMedia` in a headless browser is its own can
+of worms) and a genuine successful LLM reply rendering and streaming into
+the DOM (blocked on the same missing-API-key gap as Step 7's live voice
+verification). The jsdom-based `App.test.tsx`
 suite continues to cover the full open → type → send → stream →
 error-banner flow at the component level, now corroborated rather than
 merely inferred by this real-browser run.
@@ -507,8 +529,8 @@ re-encoded to WebM/Opus with PyAV by hand (matching `voiceCapture.ts`'s real
 `chat_service.complete_turn` (a plain JSON response, for voice — TTS needs
 the full reply text before it can run, so there's nothing to stream) both
 delegate the identical quota-check → persist-user-message → retrieval →
-build-Claude-messages sequence to a shared `_prepare_turn` helper. Only the
-Claude call itself and how the result is returned differ. A spoken turn gets
+build-Gemini-contents sequence to a shared `_prepare_turn` helper. Only the
+Gemini call itself and how the result is returned differ. A spoken turn gets
 the exact same RAG augmentation, quota accounting, and conversation history
 handling as a typed one, for free.
 
@@ -568,13 +590,14 @@ voice-enabled agent (`voice_id: en_US-lessac-medium`), and a real recording
 of "What are your business hours?" were sent through the actual running
 `/voice-messages` endpoint against a live server — the backend log shows
 `faster_whisper: Detected language 'en' with probability 0.99` and the
-exact transcribed text reaching the Claude request payload, byte for byte.
-That request then failed with the same pre-existing `llm_error` documented
-in Step 4/6 (no billed `ANTHROPIC_API_KEY` in this environment) — a Step 4
-dependency this swap never touched, not a new gap. **Voice's own paid-API
-dependency is now fully eliminated and fully verified; a complete
-spoken-question-to-spoken-answer demo still needs a working Anthropic key,**
-exactly as it would for a *typed* question, and for the same reason.
+exact transcribed text reaching the LLM request payload, byte for byte. That
+request then failed with the same pre-existing `llm_error` documented in
+Step 4/6 (no `GEMINI_API_KEY` configured in this environment at the time) —
+a Step 4 dependency this swap never touched, not a new gap. **Voice's own
+paid-API dependency is now fully eliminated and fully verified; a complete
+spoken-question-to-spoken-answer demo still needs a working (free-tier)
+Gemini key,** exactly as it would for a *typed* question, and for the same
+reason.
 
 ## Dashboard (Step 8)
 
@@ -716,7 +739,8 @@ instead, so that file had no client object to seam. Dodo's Python SDK
 `dodopayments` 1.109.0 by introspecting its real method signatures before
 writing any code against it — not assumed from docs) is a real constructed
 client, so `app/services/billing.py` now has a `get_dodo_client()` seam
-matching the Anthropic/OpenAI pattern exactly. One consequence: the
+matching the Gemini/local-voice-model client-seam pattern exactly. One
+consequence: the
 checkout/portal tests in `test_billing.py` monkeypatch a single function
 instead of two separate Stripe resource classmethods — simpler, not just
 different.
@@ -785,7 +809,7 @@ they were never going to be hardcoded.
 **Webhook state mutators take no db session and never call `commit()`.**
 `app/db/session.py`'s `get_db` already commits at the end of every request;
 `app/services/chat.py`'s explicit mid-request commits are the documented
-exception, needed only because a subsequent step (the Claude call) can fail
+exception, needed only because a subsequent step (the Gemini call) can fail
 and the user's message must survive that. Nothing runs after
 `apply_subscription_state`/`reset_usage_period`/`downgrade_to_free` in the
 webhook handler, so there's nothing to protect against — they just mutate an
@@ -851,8 +875,9 @@ migration from a blank database through nginx's own container network, and
 a full request round-trip was exercised *through nginx* (not hitting any
 container port directly): dashboard signup → agent creation → activation →
 a real widget session → conversation → message send, returning the same
-graceful `event: error` SSE payload as the local runs (still no billed
-Anthropic key on this machine). `/widget.js` served correctly from nginx's
+graceful `event: error` SSE payload as the local runs (still no
+`GEMINI_API_KEY` configured on this machine at the time). `/widget.js`
+served correctly from nginx's
 static location block. Most importantly, the thing this step actually
 exists for — Redis-backed, cross-worker rate limiting — was verified
 against a **real** Redis container, not `fakeredis`: an agent's

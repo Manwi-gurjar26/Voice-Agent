@@ -7,15 +7,15 @@ step at all, not a preference. Dodo's test mode is free and unlimited, same
 as Stripe's, and its Python SDK is a real client object (`AsyncDodoPayments`)
 rather than Stripe-python's per-call `api_key` argument style — so, unlike
 the old Stripe code, this module *does* have a single mockable client seam
-(`get_dodo_client`), matching the pattern already used for Anthropic/OpenAI
-in `llm.py`/`voice.py`.
+(`get_dodo_client`), matching the pattern already used for Gemini/the local
+voice models in `llm.py`/`voice.py`.
 
 The webhook-side state mutators (apply_subscription_state, reset_usage_period,
 downgrade_to_free) don't take a db session or commit anything — they only
 mutate an already-session-attached Tenant, and app.db.session.get_db commits
 at the end of the request. That's the default for this codebase; only
 app/services/chat.py deviates, and only because it must survive a subsequent
-step (the Claude call) that can fail. Nothing after these runs in the webhook
+step (the Gemini call) that can fail. Nothing after these runs in the webhook
 handler, so there's nothing to protect against here.
 
 A real simplification over the Stripe version, found while integrating:

@@ -32,7 +32,7 @@ function makeAgent(overrides: Partial<AgentRead> = {}): AgentRead {
     status: "active",
     system_prompt: "You are helpful.",
     greeting: "Hi!",
-    model: "claude-opus-5",
+    model: "gemini-2.5-flash",
     effort: "medium",
     max_output_tokens: 2048,
     voice_enabled: false,

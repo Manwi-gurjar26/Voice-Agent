@@ -27,7 +27,7 @@ async def test_create_agent_applies_defaults_and_returns_an_embed_snippet(client
 
     assert agent["public_key"].startswith("agt_pub_")
     assert agent["status"] == "draft"
-    assert agent["model"] == "claude-opus-5"
+    assert agent["model"] == settings.default_model
     assert agent["effort"] == "medium"
     assert agent["theme"]["primaryColor"] == "#2F6FED"
     assert agent["public_key"] in agent["embed_snippet"]

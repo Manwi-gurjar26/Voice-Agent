@@ -21,7 +21,7 @@ async def check_and_consume_quota(db: AsyncSession, tenant_id: uuid.UUID) -> Non
     FOR UPDATE serializes concurrent messages for the same tenant so two
     requests racing at the limit can't both slip through underneath it. The
     lock is held only for this one increment (released at the next commit,
-    which the caller issues immediately after) — not for the whole Claude
+    which the caller issues immediately after) — not for the whole Gemini
     call, so a busy tenant's other agents/visitors aren't serialized behind
     this one message.
 

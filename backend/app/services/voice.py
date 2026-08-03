@@ -11,8 +11,8 @@ model instead of a hosted API), not a new architectural idea for this
 codebase.
 
 Two lazily-constructed, cached objects behind two functions
-(get_whisper_model/get_piper_voice), mirroring the get_anthropic_client/
-get_openai_client seam pattern elsewhere in this codebase — tests
+(get_whisper_model/get_piper_voice), mirroring the get_gemini_client seam
+pattern elsewhere in this codebase — tests
 monkeypatch these two functions rather than touching the real models.
 Both real model calls are CPU-bound and synchronous, so both public
 functions run them via asyncio.to_thread — calling either directly from an

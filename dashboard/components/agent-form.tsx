@@ -153,7 +153,7 @@ export function AgentForm({ mode, defaultValues, onSubmit, submitting, submitLab
       <section className="grid gap-4 sm:grid-cols-2">
         <div className="flex flex-col gap-2">
           <Label htmlFor="model">Model (blank = platform default)</Label>
-          <Input id="model" placeholder="claude-opus-5" {...register("model")} />
+          <Input id="model" placeholder="gemini-2.5-flash" {...register("model")} />
         </div>
         <div className="flex flex-col gap-2">
           <Label htmlFor="effort">Effort</Label>

@@ -72,8 +72,8 @@ def test_empty_allowlist_denies_everything():
 
 
 def test_agent_does_not_expose_a_temperature_column():
-    """Current Claude models reject temperature/top_p/top_k with a 400;
-    reasoning depth is configured via `effort` instead."""
+    """This app exposes only `effort` (-> Gemini's thinking_budget) as its
+    one reasoning-depth/token-spend knob, not temperature/top_p/top_k."""
     columns = set(Agent.__table__.c.keys())
     assert {"temperature", "top_p", "top_k"}.isdisjoint(columns)
     assert "effort" in columns

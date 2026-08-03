@@ -60,8 +60,12 @@ class Settings(BaseSettings):
     public_rate_limit_window_seconds: int = 60
 
     # --- LLM ---
-    anthropic_api_key: str | None = None
-    default_model: str = "claude-opus-5"
+    # Google Gemini, not Claude — Claude has no perpetual free tier and this
+    # project cannot take on any paid API cost. Gemini's free tier (Google AI
+    # Studio) needs only a Google account, no card. gemini-2.5-flash is fast
+    # enough for a chat widget and comfortably within the free tier's limits.
+    gemini_api_key: str | None = None
+    default_model: str = "gemini-2.5-flash"
 
     # --- RAG (Step 5) ---
     # Local model — no API key needed. Swappable, but the embedding dimension

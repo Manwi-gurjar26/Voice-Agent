@@ -1,7 +1,7 @@
 """Splits extracted document text into overlapping chunks for embedding.
 
-No tokenizer involved — this is a character-based sliding window, not a
-Claude-token-accurate split. Chunk boundaries only need to be "reasonable
+No tokenizer involved — this is a character-based sliding window, not an
+LLM-token-accurate split. Chunk boundaries only need to be "reasonable
 sized pieces of text", not billing-precise; a rough heuristic that avoids
 cutting words in half is enough for retrieval quality.
 """

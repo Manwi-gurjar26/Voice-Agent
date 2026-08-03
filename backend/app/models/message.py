@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 
 class Message(Base, UUIDMixin, TimestampMixin):
     """One turn in a conversation. `input_tokens`/`output_tokens` are only
-    populated on assistant rows — they come from Claude's usage block, which
-    a user-authored message obviously has none of."""
+    populated on assistant rows — they come from Gemini's usage_metadata,
+    which a user-authored message obviously has none of."""
 
     __tablename__ = "messages"
     __table_args__ = (CheckConstraint("role IN ('user', 'assistant')", name="role_valid"),)

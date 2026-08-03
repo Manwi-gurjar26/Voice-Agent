@@ -16,106 +16,103 @@ PREFIX = settings.api_v1_prefix
 
 
 # --------------------------------------------------------------------------
-# Fake Anthropic client — the seam is app.services.llm.get_anthropic_client;
+# Fake Gemini client — the seam is app.services.llm.get_gemini_client;
 # monkeypatching it means production code never changes to run these tests.
 # --------------------------------------------------------------------------
-class _FakeUsage:
+class _FakeUsageMetadata:
     def __init__(self, input_tokens: int = 42, output_tokens: int = 7) -> None:
-        self.input_tokens = input_tokens
-        self.output_tokens = output_tokens
+        self.prompt_token_count = input_tokens
+        self.candidates_token_count = output_tokens
 
 
-class _FakeTextBlock:
-    type = "text"
+class _FakeFinishReason:
+    def __init__(self, value: str | None) -> None:
+        self.value = value
 
-    def __init__(self, text: str) -> None:
+
+class _FakeCandidate:
+    def __init__(self, finish_reason: str | None) -> None:
+        self.finish_reason = _FakeFinishReason(finish_reason)
+
+
+class _FakeGenerateContentResponse:
+    """Mirrors the members real code touches on the real SDK's response/chunk
+    object: `.text`, `.usage_metadata`, and `.candidates[0].finish_reason`."""
+
+    def __init__(self, text: str, finish_reason: str | None, usage: _FakeUsageMetadata) -> None:
         self.text = text
+        self.usage_metadata = usage
+        self.candidates = [_FakeCandidate(finish_reason)]
 
 
-class _FakeFinalMessage:
-    def __init__(self, text: str, stop_reason: str, usage: _FakeUsage) -> None:
-        self.content = [_FakeTextBlock(text)]
-        self.stop_reason = stop_reason
-        self.usage = usage
-
-
-class _FakeMessageStream:
-    """Mirrors the two members real code touches on the real SDK's stream
-    object: the `text_stream` async iterator and `get_final_message()`."""
-
+class _FakeGeminiStream:
     def __init__(
         self,
         chunks: tuple[str, ...],
-        stop_reason: str = "end_turn",
-        usage: _FakeUsage | None = None,
+        finish_reason: str = "STOP",
+        usage: _FakeUsageMetadata | None = None,
         delay_seconds: float = 0.0,
         error: Exception | None = None,
     ) -> None:
         self._chunks = chunks
-        self._stop_reason = stop_reason
-        self._usage = usage or _FakeUsage()
+        self._finish_reason = finish_reason
+        self._usage = usage or _FakeUsageMetadata()
         self._delay_seconds = delay_seconds
         self._error = error
 
-    async def __aenter__(self) -> "_FakeMessageStream":
-        return self
-
-    async def __aexit__(self, *exc_info: object) -> bool:
-        return False
-
-    async def _gen(self):
+    async def __aiter__(self):
         for chunk in self._chunks:
             if self._delay_seconds:
                 await asyncio.sleep(self._delay_seconds)
-            yield chunk
+            yield _FakeGenerateContentResponse(chunk, self._finish_reason, self._usage)
         if self._error is not None:
             raise self._error
 
-    @property
-    def text_stream(self):
-        return self._gen()
-
-    async def get_final_message(self) -> _FakeFinalMessage:
-        return _FakeFinalMessage("".join(self._chunks), self._stop_reason, self._usage)
-
-    async def create(self) -> _FakeFinalMessage:
-        """Mirrors the non-streaming client.messages.create() path used by
-        chat_service.complete_turn (Step 7) — unlike get_final_message, this
-        raises `error` directly, since there's no text_stream iteration to
-        raise it for a caller that never streams."""
+    async def create(self) -> _FakeGenerateContentResponse:
+        """Mirrors the non-streaming client.aio.models.generate_content()
+        path used by chat_service.complete_turn (Step 7) — unlike iterating
+        the stream, this raises `error` directly, since there are no chunks
+        to raise it partway through for a caller that never streams."""
         if self._error is not None:
             raise self._error
-        return _FakeFinalMessage("".join(self._chunks), self._stop_reason, self._usage)
+        return _FakeGenerateContentResponse(
+            "".join(self._chunks), self._finish_reason, self._usage
+        )
 
 
-class _FakeMessagesResource:
+class _FakeModelsResource:
     def __init__(self, factory) -> None:
         self._factory = factory
         self.last_kwargs: dict | None = None
 
-    def stream(self, **kwargs):
+    async def generate_content_stream(self, **kwargs):
         self.last_kwargs = kwargs
         return self._factory(**kwargs)
 
-    async def create(self, **kwargs) -> _FakeFinalMessage:
+    async def generate_content(self, **kwargs) -> _FakeGenerateContentResponse:
         self.last_kwargs = kwargs
         return await self._factory(**kwargs).create()
 
 
-class FakeAnthropicClient:
+class _FakeAio:
+    def __init__(self, models: _FakeModelsResource) -> None:
+        self.models = models
+
+
+class FakeGeminiClient:
     def __init__(self, factory) -> None:
-        self.messages = _FakeMessagesResource(factory)
+        self.aio = _FakeAio(_FakeModelsResource(factory))
 
 
 def install_fake_client(monkeypatch, chunks=("Hello", ", ", "world!"), **stream_kwargs):
-    """Patch app.services.llm.get_anthropic_client for the duration of a
+    """Patch app.services.llm.get_gemini_client for the duration of a
     test. Returns the fake client so tests can inspect what was requested."""
 
     def factory(**_kwargs):
-        return _FakeMessageStream(chunks, **stream_kwargs)
+        return _FakeGeminiStream(chunks, **stream_kwargs)
 
-    fake_client = FakeAnthropicClient(factory)
-    monkeypatch.setattr(llm, "get_anthropic_client", lambda: fake_client)
+    fake_client = FakeGeminiClient(factory)
+    monkeypatch.setattr(llm, "get_gemini_client", lambda: fake_client)
     return fake_client
 
 
@@ -225,7 +222,7 @@ async def test_send_message_streams_deltas_and_a_done_event(client, monkeypatch)
     done_events = [data for event, data in events if event == "done"]
     assert len(done_events) == 1
     assert done_events[0]["usage"] == {"input_tokens": 42, "output_tokens": 7}
-    assert done_events[0]["stop_reason"] == "end_turn"
+    assert done_events[0]["stop_reason"] == "STOP"
 
 
 async def test_sent_message_and_reply_are_both_persisted(client, monkeypatch, db_session):
@@ -301,7 +298,7 @@ async def test_message_list_endpoint_returns_full_history(client, monkeypatch):
     assert contents == [("user", "Question one"), ("assistant", "Reply one")]
 
 
-async def test_claude_is_called_with_the_agents_configuration(client, monkeypatch):
+async def test_gemini_is_called_with_the_agents_configuration(client, monkeypatch):
     tokens = await register(client)
     agent, session = await make_widget_session(
         client, tokens, effort="xhigh", max_output_tokens=1024
@@ -317,14 +314,16 @@ async def test_claude_is_called_with_the_agents_configuration(client, monkeypatc
         headers=session_auth(session),
     )
 
-    kwargs = fake_client.messages.last_kwargs
+    kwargs = fake_client.aio.models.last_kwargs
     assert kwargs["model"] == agent["model"]
-    assert kwargs["max_tokens"] == 1024
-    assert kwargs["output_config"] == {"effort": "xhigh"}
-    assert kwargs["system"] == agent["system_prompt"]
-    # No temperature/top_p/top_k anywhere — current Claude models reject them.
-    assert "temperature" not in kwargs
-    assert "top_p" not in kwargs
+    config = kwargs["config"]
+    assert config.max_output_tokens == 1024
+    assert config.thinking_config.thinking_budget == 16384  # xhigh
+    assert config.system_instruction == agent["system_prompt"]
+    # No temperature/top_p/top_k anywhere — this app exposes only `effort`
+    # (-> thinking_budget) as its one reasoning-depth knob.
+    assert config.temperature is None
+    assert config.top_p is None
 
 
 async def test_multi_turn_history_alternates_correctly(client, monkeypatch):
@@ -347,17 +346,17 @@ async def test_multi_turn_history_alternates_correctly(client, monkeypatch):
         headers=session_auth(session),
     )
 
-    second_call_messages = fake_client.messages.last_kwargs["messages"]
-    roles = [m["role"] for m in second_call_messages]
-    assert roles == ["user", "assistant", "user"]
-    assert second_call_messages[0]["content"] == "First question"
-    assert second_call_messages[-1]["content"] == "Second question"
+    second_call_contents = fake_client.aio.models.last_kwargs["contents"]
+    roles = [c.role for c in second_call_contents]
+    assert roles == ["user", "model", "user"]
+    assert second_call_contents[0].parts[0].text == "First question"
+    assert second_call_contents[-1].parts[0].text == "Second question"
 
 
 # --------------------------------------------------------------------------
 # Error handling
 # --------------------------------------------------------------------------
-async def test_claude_error_surfaces_as_an_sse_error_event_not_a_500(client, monkeypatch):
+async def test_gemini_error_surfaces_as_an_sse_error_event_not_a_500(client, monkeypatch):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
     install_fake_client(monkeypatch, chunks=(), error=RuntimeError("boom"))
@@ -380,7 +379,7 @@ async def test_claude_error_surfaces_as_an_sse_error_event_not_a_500(client, mon
 
 
 async def test_a_failed_turn_still_persists_the_user_message(client, monkeypatch, db_session):
-    """Quota and the user's own message must survive a Claude-side failure —
+    """Quota and the user's own message must survive a Gemini-side failure —
     otherwise a flaky LLM call would let a client retry for free."""
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
@@ -405,7 +404,7 @@ async def test_a_failed_turn_still_leaves_alternating_history_for_the_next_messa
 ):
     """After a failed turn, the conversation has a lone unanswered user
     message. The NEXT user message must not produce two consecutive user
-    turns in the Claude request — _build_claude_messages merges them."""
+    turns in the Gemini request — _build_gemini_contents merges them."""
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
     install_fake_client(monkeypatch, chunks=(), error=RuntimeError("boom"))
@@ -427,9 +426,9 @@ async def test_a_failed_turn_still_leaves_alternating_history_for_the_next_messa
         headers=session_auth(session),
     )
 
-    sent_messages = fake_client.messages.last_kwargs["messages"]
-    assert [m["role"] for m in sent_messages] == ["user"]
-    assert sent_messages[0]["content"] == "first (will fail)\n\nsecond (will succeed)"
+    sent_contents = fake_client.aio.models.last_kwargs["contents"]
+    assert [c.role for c in sent_contents] == ["user"]
+    assert sent_contents[0].parts[0].text == "first (will fail)\n\nsecond (will succeed)"
 
 
 async def test_empty_message_is_rejected(client, monkeypatch):
@@ -589,7 +588,7 @@ async def test_response_streams_incrementally_not_all_at_once(app, monkeypatch):
     curl trace) showed correct ~500ms-spaced incremental delivery through
     this exact middleware stack. So this test runs a real uvicorn `Server`
     on a real loopback socket, in-process (same event loop, so monkeypatching
-    the fake Anthropic client still works) — the only way to get a
+    the fake Gemini client still works) — the only way to get a
     trustworthy answer inside the automated suite.
     """
     import httpx
@@ -712,7 +711,7 @@ async def test_relevant_chunks_are_injected_into_the_system_prompt(client, monke
         headers=session_auth(session),
     )
 
-    sent_system = fake_client.messages.last_kwargs["system"]
+    sent_system = fake_client.aio.models.last_kwargs["config"].system_instruction
     assert "We are open 9am to 5pm" in sent_system
     assert "Business Hours" in sent_system
     assert sent_system.startswith(agent["system_prompt"])  # base prompt preserved, not replaced
@@ -869,7 +868,7 @@ async def test_no_knowledge_base_means_unmodified_prompt_and_no_citations(client
         headers=session_auth(session),
     )
 
-    assert fake_client.messages.last_kwargs["system"] == agent["system_prompt"]
+    assert fake_client.aio.models.last_kwargs["config"].system_instruction == agent["system_prompt"]
     done = next(data for event, data in parse_sse(response.text) if event == "done")
     assert done["citations"] == []
     assert embed_calls == []  # agent_has_chunks short-circuited before any embedding call

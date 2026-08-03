@@ -46,7 +46,7 @@ class RateLimitResult:
 def get_redis_client() -> redis.Redis:
     """Lazily-constructed client — the seam tests monkeypatch to substitute
     a fakeredis instance instead of a real server, mirroring
-    llm.get_anthropic_client / voice.get_openai_client."""
+    llm.get_gemini_client / voice.get_whisper_model."""
     global _redis_client
     if _redis_client is None:
         _redis_client = redis.from_url(settings.redis_url)

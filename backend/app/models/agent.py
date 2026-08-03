@@ -79,8 +79,10 @@ class Agent(Base, UUIDMixin, TimestampMixin):
     model: Mapped[str] = mapped_column(
         String(60), nullable=False, default=lambda: settings.default_model
     )
-    # NOTE: current Claude models reject temperature/top_p/top_k with a 400.
-    # `effort` is the supported control for reasoning depth and token spend.
+    # `effort` maps to Gemini's thinking_budget (see app/services/chat.py).
+    # Gemini does accept temperature/top_p/top_k, unlike Claude — but this
+    # app deliberately exposes only one reasoning-depth/token-spend knob to
+    # configure per agent, not three.
     effort: Mapped[EffortLevel] = mapped_column(
         String(10), nullable=False, default=EffortLevel.MEDIUM, server_default="medium"
     )

@@ -55,7 +55,7 @@ def extract_text_from_upload(filename: str, content: bytes) -> str:
 
 def _build_http_client() -> httpx.AsyncClient:
     """The one mockable seam for URL fetching — same pattern as
-    get_anthropic_client / get_embedding_model. Tests monkeypatch this to
+    get_gemini_client / get_embedding_model. Tests monkeypatch this to
     return a client wired to httpx.MockTransport instead of hitting the
     network."""
     return httpx.AsyncClient(follow_redirects=True, timeout=settings.url_fetch_timeout_seconds)

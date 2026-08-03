@@ -16,7 +16,7 @@ AUDIO_BYTES = b"pretend-this-is-a-webm-audio-clip"
 
 # --------------------------------------------------------------------------
 # Fake local models — the seams are get_whisper_model/get_piper_voice,
-# mirroring test_chat.py's install_fake_client for the Anthropic seam.
+# mirroring test_chat.py's install_fake_client for the Gemini seam.
 # Real model behavior (that synthesized audio actually transcribes back to
 # recognizable text) is covered separately in test_voice_models.py.
 # --------------------------------------------------------------------------

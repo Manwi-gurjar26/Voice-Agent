@@ -30,10 +30,13 @@ class AgentStatus(StrEnum):
 
 
 class EffortLevel(StrEnum):
-    """Maps to Claude's `output_config.effort`.
+    """Maps to Gemini's `thinking_config.thinking_budget` (a token count) —
+    see `_THINKING_BUDGET_BY_EFFORT` in app/services/chat.py.
 
-    This replaces the `temperature` knob you'd expect from older APIs — current
-    Claude models reject `temperature`, `top_p`, and `top_k` with a 400.
+    Originally modeled on Claude's `output_config.effort`, which replaced the
+    `temperature` knob for that provider. Kept as this same 5-level scale
+    across the Anthropic -> Gemini swap so no migration was needed — only the
+    mapping in the LLM call itself changed.
     """
 
     LOW = "low"

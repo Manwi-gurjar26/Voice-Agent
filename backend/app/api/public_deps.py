@@ -152,6 +152,6 @@ async def enforce_session_rate_limit(
     of {public_key} in the path (conversation creation, sending a message).
     One shared cost-exposure budget per agent per visitor, regardless of
     which route they hit — this is deliberately the most heavily-protected
-    bucket, since a chat message is what actually triggers a paid Claude call.
+    bucket, since a chat message is what actually triggers a Gemini call.
     """
     await _enforce_rate_limit_for_agent(session.agent, ip)

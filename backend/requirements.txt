@@ -19,7 +19,10 @@ bcrypt>=4.2,<5.0
 pyjwt>=2.10,<3.0
 
 # --- LLM (used from Step 4 onward) ---
-anthropic>=0.69
+# Google Gemini, not Claude — Claude has no perpetual free tier and this
+# project cannot take on any paid API cost. Gemini's free tier (Google AI
+# Studio) needs only a Google account, no card.
+google-genai>=2.0,<3.0
 
 # --- Voice (Step 7) ---
 # Local, free STT/TTS — no API key, no billing. Originally OpenAI Whisper +
