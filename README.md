@@ -251,6 +251,26 @@ and `app/services/llm.py`). This is the one dependency in the whole platform
 still requiring a real (if free) API key — see the chat pipeline's own
 setup note for how to get one.
 
+**`default_model` is `gemini-flash-latest`, not a pinned version — found the
+hard way.** The first live test, with a real free-tier `GEMINI_API_KEY` and
+a real running server, sent an actual question through the full
+signup → agent → widget session → conversation → message pipeline and got
+back a genuine real HTTPS **404** from Google's own API:
+`"This model models/gemini-2.5-flash is no longer available to new users."`
+— confirmed by listing the key's actually-available models
+(`client.models.list()`) and hand-testing candidates directly against the
+live API before touching any production code. `gemini-2.5-flash-lite` 404s
+the same way; `gemini-2.0-flash` free-tier-quota-exhausts instead (`429`).
+`gemini-flash-latest` — Google's own always-current alias — worked, verified
+against the exact production call shape (system instruction + thinking
+config + streaming), then end-to-end through a real live server: a real
+question ("what is the capital of France?") got a real Gemini reply
+("The capital of France is Paris."), confirmed via the server's own request
+log showing `POST .../gemini-flash-latest:streamGenerateContent ... 200 OK`.
+Pinning to a specific dated model id would just repeat this exact failure
+the next time Google retires one — the "-latest" alias exists precisely so
+this setting doesn't need to be revisited every few months.
+
 **Known limitation: no prompt caching yet.** `system_prompt` is sent as a
 plain string on every turn, not wrapped in a cached-content block. For a
 long multi-turn conversation this resends the full system prompt every time.

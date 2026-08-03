@@ -62,10 +62,19 @@ class Settings(BaseSettings):
     # --- LLM ---
     # Google Gemini, not Claude — Claude has no perpetual free tier and this
     # project cannot take on any paid API cost. Gemini's free tier (Google AI
-    # Studio) needs only a Google account, no card. gemini-2.5-flash is fast
-    # enough for a chat widget and comfortably within the free tier's limits.
+    # Studio) needs only a Google account, no card.
+    #
+    # "gemini-flash-latest", not a pinned version: confirmed live (with a
+    # real free-tier key) that Google had already stopped issuing
+    # gemini-2.5-flash to new API keys/projects ("This model ... is no
+    # longer available to new users", a real 404 from the live API, not a
+    # guess) — the exact deprecation the README warns pinned model ids are
+    # exposed to. The "-latest" alias is Google's own mechanism for this:
+    # it always resolves to their current recommended flash model, so this
+    # setting doesn't go stale the next time they retire one. Overridable
+    # per-agent via Agent.model regardless.
     gemini_api_key: str | None = None
-    default_model: str = "gemini-2.5-flash"
+    default_model: str = "gemini-flash-latest"
 
     # --- RAG (Step 5) ---
     # Local model — no API key needed. Swappable, but the embedding dimension
