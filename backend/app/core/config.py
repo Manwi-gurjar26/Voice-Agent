@@ -84,7 +84,14 @@ class Settings(BaseSettings):
     chunk_size_chars: int = 1_000
     chunk_overlap_chars: int = 150
     retrieval_top_k: int = 5
-    retrieval_min_similarity: float = 0.3
+    # 0.3 was too strict for all-MiniLM-L6-v2's cosine-similarity range on
+    # short queries against a multi-topic chunk (a real crawled page mixing
+    # several facts in one paragraph) — a genuinely relevant query scored
+    # ~0.24 and got dropped. Lowered to 0.2 after checking the real gap
+    # against unrelated queries against the same chunk (they scored
+    # 0.04-0.07, sometimes negative), so this still has a comfortable margin
+    # on both sides, not just a number that happened to let one case through.
+    retrieval_min_similarity: float = 0.2
 
     # Ingestion runs synchronously within the request (see README) — these
     # bound worst-case request latency and cost, not just abuse.
