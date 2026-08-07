@@ -120,7 +120,7 @@ async def send_voice_message(
     conversation = await chat_service.get_owned_conversation(db, session, conversation_id)
 
     try:
-        transcript = await voice_service.transcribe_audio(content)
+        transcript = await voice_service.transcribe_audio(content, file.filename or "recording.webm")
     except voice_service.VoiceUnavailableError as exc:
         raise AppError(
             str(exc), code="voice_unavailable", status_code=status.HTTP_503_SERVICE_UNAVAILABLE

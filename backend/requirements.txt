@@ -25,13 +25,12 @@ pyjwt>=2.10,<3.0
 google-genai>=2.0,<3.0
 
 # --- Voice (Step 7) ---
-# Local, free STT/TTS — no API key, no billing. Originally OpenAI Whisper +
-# tts-1; swapped because voice is otherwise inherently a paid, metered
-# feature. faster-whisper downloads its Whisper model from Hugging Face on
-# first use (same pattern as sentence-transformers below); piper-tts
-# downloads its voice models the same way via piper.download_voices.
-faster-whisper>=1.2,<2.0
-piper-tts>=1.6,<2.0
+# Groq (STT + the voice-reply LLM) and Fish Audio (TTS) — see
+# app/services/voice.py and chat.py's complete_turn. Fish Audio is called
+# directly over HTTP (no official SDK dependency added) using the `httpx`
+# already required below under Tests — it's a runtime dependency now too,
+# not test-only.
+groq>=0.11,<1.0
 
 # --- Billing (Step 9) ---
 # Dodo Payments, not Stripe — Stripe does not onboard new India-registered
@@ -52,5 +51,5 @@ python-multipart>=0.0.9           # required by FastAPI for file-upload endpoint
 # --- Tests ---
 pytest>=8.3
 pytest-asyncio>=0.24
-httpx>=0.28
+httpx>=0.28              # also used at runtime by voice.py's Fish Audio TTS call, not test-only
 fakeredis>=2.20,<3.0        # in-memory Redis emulator for rate_limit.py's Redis backend

@@ -14,7 +14,13 @@ if TYPE_CHECKING:
 
 
 class Document(Base, UUIDMixin, TimestampMixin):
-    """One knowledge-base source: pasted text, an uploaded file, or a URL.
+    """One knowledge-base source: pasted text, an uploaded file, a single
+    URL, or one page discovered by a Firecrawl site crawl (source_type
+    'crawl' — see app/services/firecrawl.py). A crawl produces one Document
+    per page it discovers, not one Document for the whole site: this keeps
+    citations pointing at the specific page a chunk actually came from,
+    consistent with how a single 'url' document already works, rather than
+    a new "site" concept with its own chunking/citation semantics.
 
     `status` tracks ingestion outcome. Ingestion runs synchronously within the
     creating request for this MVP (see README's RAG section for the tradeoff
@@ -27,7 +33,7 @@ class Document(Base, UUIDMixin, TimestampMixin):
 
     __tablename__ = "documents"
     __table_args__ = (
-        CheckConstraint("source_type IN ('text', 'file', 'url')", name="source_type_valid"),
+        CheckConstraint("source_type IN ('text', 'file', 'url', 'crawl')", name="source_type_valid"),
         CheckConstraint(
             "status IN ('pending', 'processing', 'ready', 'failed')", name="status_valid"
         ),

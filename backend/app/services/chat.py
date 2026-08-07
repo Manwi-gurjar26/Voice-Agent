@@ -17,11 +17,16 @@ from app.core.errors import AppError, NotFoundError, QuotaExceededError
 from app.models import Agent, Chunk, Conversation, Message
 from app.models.enums import EffortLevel
 from app.models.widget_session import WidgetSession
-from app.services import embeddings, llm
+from app.services import embeddings, groq_llm, llm
 from app.services.quota import check_and_consume_quota
 from app.services.retrieval import agent_has_chunks, find_relevant_chunks
 
 logger = logging.getLogger(__name__)
+
+# Voice replies only (see complete_turn) — typed chat stays on the
+# per-agent Gemini model. Explicit request to pipeline voice through Groq
+# instead of Gemini/Gemini Live.
+GROQ_VOICE_MODEL = "llama-3.1-8b-instant"
 
 # Defensive cap on how much history we load and resend to the model per turn
 # — not a product-facing pagination limit. A conversation this long is
@@ -134,6 +139,22 @@ def _augment_system_prompt(base_prompt: str, chunks: list[Chunk]) -> str:
     )
 
 
+def _build_groq_messages(system_prompt: str, history: list[Message]) -> list[dict]:
+    """Groq's chat completions API is OpenAI-shaped: a flat message list
+    with the system prompt as its own leading message, not Gemini's separate
+    system_instruction + alternating-role Content list. Unlike
+    _build_gemini_contents, this doesn't collapse consecutive same-role rows
+    — OpenAI-compatible APIs are documented to tolerate non-alternating
+    roles, unlike Gemini's stricter requirement, though this hasn't been
+    exercised against a failed-prior-turn edge case the way Gemini's version
+    was."""
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    for row in history:
+        role = "assistant" if row.role == "assistant" else "user"
+        messages.append({"role": role, "content": row.content})
+    return messages
+
+
 def _citations_from_chunks(chunks: list[Chunk]) -> list[dict] | None:
     """Deduplicated by document — several chunks from the same document
     should produce one citation entry, not one per chunk."""
@@ -160,7 +181,7 @@ def _generation_config(agent: Agent, system_prompt: str) -> types.GenerateConten
 
 async def _prepare_turn(
     db: AsyncSession, conversation: Conversation, agent: Agent, user_content: str
-) -> tuple[str, list[types.Content], list[Chunk]]:
+) -> tuple[str, list[types.Content], list[Message], list[Chunk]]:
     """Shared prep for both stream_turn and complete_turn: enforce quota,
     persist the user message, run retrieval, and build the Gemini contents
     list. Raises QuotaExceededError (already rolled back) on quota failure —
@@ -207,7 +228,7 @@ async def _prepare_turn(
 
     history = await list_messages(db, conversation)
     gemini_contents = _build_gemini_contents(history)
-    return system_prompt, gemini_contents, relevant_chunks
+    return system_prompt, gemini_contents, history, relevant_chunks
 
 
 async def stream_turn(
@@ -219,7 +240,7 @@ async def stream_turn(
     directly to `StreamingResponse(..., media_type="text/event-stream")`.
     """
     try:
-        system_prompt, gemini_contents, relevant_chunks = await _prepare_turn(
+        system_prompt, gemini_contents, _history, relevant_chunks = await _prepare_turn(
             db, conversation, agent, user_content
         )
     except QuotaExceededError as exc:
@@ -295,38 +316,44 @@ async def complete_turn(
     nothing to stream to the caller. Raises AppError on quota/LLM failure
     instead of yielding an SSE error event — this returns a normal JSON
     response, not a stream.
+
+    Runs on Groq's llama-3.1-8b-instant, not the agent's configured Gemini
+    model — an explicit request to keep voice's reply generation on Groq
+    while typed messages (stream_turn) stay on Gemini. Retrieval, quota, and
+    citation handling are unchanged and identical to stream_turn's — only
+    which LLM produces the reply text differs.
     """
     try:
-        system_prompt, gemini_contents, relevant_chunks = await _prepare_turn(
+        system_prompt, _gemini_contents, history, relevant_chunks = await _prepare_turn(
             db, conversation, agent, user_content
         )
     except QuotaExceededError as exc:
         raise AppError(exc.message, code=exc.code, status_code=exc.status_code) from exc
 
     try:
-        client = llm.get_gemini_client()
-        response = await client.aio.models.generate_content(
-            model=agent.model,
-            contents=gemini_contents,
-            config=_generation_config(agent, system_prompt),
+        client = groq_llm.get_groq_client()
+        response = await client.chat.completions.create(
+            model=GROQ_VOICE_MODEL,
+            messages=_build_groq_messages(system_prompt, history),
+            max_tokens=agent.max_output_tokens,
         )
     except Exception as exc:
-        logger.exception("Gemini call failed for conversation %s", conversation.id)
+        logger.exception("Groq call failed for conversation %s", conversation.id)
         raise AppError(
             "The assistant is temporarily unavailable. Please try again.",
             code="llm_error",
             status_code=502,
         ) from exc
 
-    accumulated = response.text or ""
-    usage = response.usage_metadata
+    accumulated = response.choices[0].message.content or ""
+    usage = response.usage
     citations = _citations_from_chunks(relevant_chunks)
     assistant_message = Message(
         conversation_id=conversation.id,
         role="assistant",
         content=accumulated,
-        input_tokens=usage.prompt_token_count if usage else 0,
-        output_tokens=usage.candidates_token_count if usage else 0,
+        input_tokens=usage.prompt_tokens if usage else 0,
+        output_tokens=usage.completion_tokens if usage else 0,
         citations=citations,
     )
     db.add(assistant_message)

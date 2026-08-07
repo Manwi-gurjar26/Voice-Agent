@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import base64
-from types import SimpleNamespace
 
 from app.core.config import settings
-from app.services import voice
+from app.services import groq_llm, voice
 from tests.test_auth import register
-from tests.test_chat import install_fake_client, make_widget_session, session_auth
+from tests.test_chat import make_widget_session, session_auth
 from tests.test_public import make_active_agent
 
 PREFIX = settings.api_v1_prefix
@@ -15,49 +14,82 @@ AUDIO_BYTES = b"pretend-this-is-a-webm-audio-clip"
 
 
 # --------------------------------------------------------------------------
-# Fake local models — the seams are get_whisper_model/get_piper_voice,
-# mirroring test_chat.py's install_fake_client for the Gemini seam.
-# Real model behavior (that synthesized audio actually transcribes back to
-# recognizable text) is covered separately in test_voice_models.py.
+# Fakes at the two network seams a voice turn actually uses:
+# voice.transcribe_audio/synthesize_speech (Groq STT / Fish Audio TTS,
+# called directly — no client-object seam for either, see voice.py) and
+# groq_llm.get_groq_client (the LLM step in chat_service.complete_turn).
+# Mirrors test_chat.py's install_fake_client for the analogous Gemini seam.
+# Real model behavior is covered separately in test_voice_models.py.
 # --------------------------------------------------------------------------
-class FakeWhisperModel:
-    def __init__(self, result: str | Exception) -> None:
-        self._result = result
-        self.last_audio = None
-
-    def transcribe(self, audio, **kwargs):
-        self.last_audio = audio
-        if isinstance(self._result, Exception):
-            raise self._result
-        segments = [SimpleNamespace(text=self._result)] if self._result.strip() else []
-        return segments, SimpleNamespace(language="en", language_probability=1.0)
-
-
-class FakePiperVoice:
-    def __init__(self, fail: Exception | None = None) -> None:
-        self._fail = fail
-        self.last_text: str | None = None
-
-    def synthesize_wav(self, text, wav_file) -> None:
-        self.last_text = text
-        if self._fail:
-            raise self._fail
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(22050)
-        wav_file.writeframes(b"\x00\x00" * 100)
-
-
 def install_fake_voice_client(
     monkeypatch,
     transcript: str | Exception = "What are your hours?",
     tts_fail: Exception | None = None,
-) -> tuple[FakeWhisperModel, FakePiperVoice]:
-    fake_model = FakeWhisperModel(transcript)
-    fake_voice = FakePiperVoice(fail=tts_fail)
-    monkeypatch.setattr(voice, "get_whisper_model", lambda: fake_model)
-    monkeypatch.setattr(voice, "get_piper_voice", lambda voice_id: fake_voice)
-    return fake_model, fake_voice
+) -> None:
+    async def fake_transcribe(audio_bytes: bytes, filename: str) -> str:
+        if isinstance(transcript, Exception):
+            raise transcript
+        return transcript.strip()  # transcribe_audio's real contract: always stripped
+
+    async def fake_synthesize(text: str, voice_id: str | None) -> bytes:
+        if tts_fail:
+            raise tts_fail
+        return b"\xff\xfb\x90\x00fake-mp3-bytes"
+
+    monkeypatch.setattr(voice, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(voice, "synthesize_speech", fake_synthesize)
+
+
+class _FakeGroqMessage:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeGroqChoice:
+    def __init__(self, content: str) -> None:
+        self.message = _FakeGroqMessage(content)
+
+
+class _FakeGroqUsage:
+    def __init__(self, prompt_tokens: int = 10, completion_tokens: int = 5) -> None:
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
+
+class _FakeGroqResponse:
+    def __init__(self, content: str) -> None:
+        self.choices = [_FakeGroqChoice(content)]
+        self.usage = _FakeGroqUsage()
+
+
+class _FakeGroqCompletions:
+    def __init__(self, reply: str | Exception) -> None:
+        self._reply = reply
+        self.last_kwargs: dict | None = None
+
+    async def create(self, **kwargs) -> _FakeGroqResponse:
+        self.last_kwargs = kwargs
+        if isinstance(self._reply, Exception):
+            raise self._reply
+        return _FakeGroqResponse(self._reply)
+
+
+class _FakeGroqChat:
+    def __init__(self, completions: _FakeGroqCompletions) -> None:
+        self.completions = completions
+
+
+class FakeGroqClient:
+    def __init__(self, reply: str | Exception) -> None:
+        self.chat = _FakeGroqChat(_FakeGroqCompletions(reply))
+
+
+def install_fake_groq_client(monkeypatch, reply: str | Exception = "We're open 9 to 5.") -> FakeGroqClient:
+    """Patch app.services.groq_llm.get_groq_client for the duration of a
+    test. Returns the fake client so tests can inspect what was requested."""
+    fake_client = FakeGroqClient(reply)
+    monkeypatch.setattr(groq_llm, "get_groq_client", lambda: fake_client)
+    return fake_client
 
 
 async def make_voice_conversation(client, session) -> str:
@@ -82,7 +114,7 @@ async def test_voice_message_happy_path(client, monkeypatch, db_session):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens, voice_enabled=True)
     install_fake_voice_client(monkeypatch, transcript="What are your hours?")
-    install_fake_client(monkeypatch, chunks=("We're open 9 to 5.",))
+    install_fake_groq_client(monkeypatch, reply="We're open 9 to 5.")
 
     conv_id = await make_voice_conversation(client, session)
     response = await post_voice_message(client, conv_id, session)
@@ -92,10 +124,8 @@ async def test_voice_message_happy_path(client, monkeypatch, db_session):
     assert body["transcript"] == "What are your hours?"
     assert body["message"]["role"] == "assistant"
     assert body["message"]["content"] == "We're open 9 to 5."
-    assert body["audio_mime"] == "audio/wav"
-    # A real WAV file (the fake still runs the real wave-writing code in
-    # voice.py's _synthesize_sync — only get_piper_voice itself is faked).
-    assert base64.b64decode(body["audio_base64"])[:4] == b"RIFF"
+    assert body["audio_mime"] == "audio/mpeg"
+    assert base64.b64decode(body["audio_base64"]) == b"\xff\xfb\x90\x00fake-mp3-bytes"
 
 
 async def test_voice_message_persists_both_turns(client, monkeypatch, db_session):
@@ -106,7 +136,7 @@ async def test_voice_message_persists_both_turns(client, monkeypatch, db_session
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens, voice_enabled=True)
     install_fake_voice_client(monkeypatch, transcript="hello")
-    install_fake_client(monkeypatch, chunks=("hi there",))
+    install_fake_groq_client(monkeypatch, reply="hi there")
 
     conv_id = await make_voice_conversation(client, session)
     response = await post_voice_message(client, conv_id, session)
@@ -174,7 +204,7 @@ async def test_llm_failure_after_transcription_maps_to_a_clean_error(client, mon
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens, voice_enabled=True)
     install_fake_voice_client(monkeypatch, transcript="hello")
-    install_fake_client(monkeypatch, chunks=(), error=RuntimeError("claude is down"))
+    install_fake_groq_client(monkeypatch, reply=RuntimeError("groq is down"))
 
     conv_id = await make_voice_conversation(client, session)
     response = await post_voice_message(client, conv_id, session)
@@ -192,7 +222,7 @@ async def test_tts_failure_still_returns_the_text_reply(client, monkeypatch, db_
     install_fake_voice_client(
         monkeypatch, transcript="hello", tts_fail=RuntimeError("synth crashed")
     )
-    install_fake_client(monkeypatch, chunks=("hi there",))
+    install_fake_groq_client(monkeypatch, reply="hi there")
 
     conv_id = await make_voice_conversation(client, session)
     response = await post_voice_message(client, conv_id, session)
@@ -211,7 +241,7 @@ async def test_quota_exceeded_is_rejected_before_any_provider_call(client, monke
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens, voice_enabled=True)
     install_fake_voice_client(monkeypatch)
-    install_fake_client(monkeypatch, chunks=("should not be reached",))
+    install_fake_groq_client(monkeypatch, reply="should not be reached")
 
     tenant = await db_session.scalar(select(Tenant))
     tenant.monthly_message_quota = 0
@@ -269,16 +299,14 @@ async def test_unknown_conversation_id_is_404(client, monkeypatch, db_session):
 
 
 async def test_voice_unavailable_when_model_fails_to_load(client, monkeypatch, db_session):
-    """No API key exists to unset anymore — the local equivalent of "voice
-    unavailable" is a model failing to load (e.g. no internet on a cold
-    cache). Simulated directly at the seam rather than actually breaking
-    network access, which the real get_whisper_model already translates
-    into VoiceUnavailableError (see its except clause)."""
+    """Simulated directly at the seam rather than actually breaking network
+    access — the real transcribe_audio already translates a Groq-reachability
+    failure into VoiceUnavailableError (see its except clause)."""
 
-    def _raise():
+    async def _raise(audio_bytes: bytes, filename: str) -> str:
         raise voice.VoiceUnavailableError("model unavailable")
 
-    monkeypatch.setattr(voice, "get_whisper_model", _raise)
+    monkeypatch.setattr(voice, "transcribe_audio", _raise)
 
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens, voice_enabled=True)

@@ -93,19 +93,32 @@ class Settings(BaseSettings):
     url_fetch_timeout_seconds: float = 10.0
     max_url_response_bytes: int = 5 * 1024 * 1024
 
+    # --- Website-crawl ingestion (Firecrawl) ---
+    # Firecrawl's own crawl job runs asynchronously on their servers — see
+    # app/services/firecrawl.py — this backend starts it, then polls until
+    # done, still within the one synchronous request (same tradeoff as the
+    # rest of ingestion above). max_crawl_pages caps pages per crawl, since
+    # Firecrawl bills per page scraped and the free tier is a fixed monthly
+    # credit pool shared by every crawl any tenant runs.
+    firecrawl_api_key: str | None = None
+    max_crawl_pages: int = 20
+    crawl_poll_timeout_seconds: float = 120.0
+    crawl_poll_interval_seconds: float = 3.0
+
     # --- Voice (Step 7) ---
-    # Turn-based STT/TTS via local models (faster-whisper + Piper) — no API
-    # key, no billing, no external account. Originally OpenAI; swapped
-    # because voice is otherwise inherently a paid, metered feature and this
-    # project cannot take on billing of any kind. voice_enabled is per-agent
-    # (see Agent model). voice_stt_model_size is any faster-whisper model
-    # name (tiny/base/small/medium/large-v3) — "base" balances CPU speed
-    # against accuracy for short utterances. voice_models_dir caches
-    # downloaded Piper voice files (~/.onnx + .onnx.json per voice),
-    # downloaded once on first use, same pattern as embedding_model_name.
-    voice_stt_model_size: str = "base"
-    voice_models_dir: str = ".voice_models"
-    voice_default_voice: str = "en_US-lessac-medium"
+    # Turn-based pipeline: Groq (STT via whisper-large-v3-turbo, and the
+    # reply LLM via llama-3.1-8b-instant — see app/services/chat.py's
+    # complete_turn) and Fish Audio (TTS via its s2.1-pro-free model — see
+    # app/services/voice.py). voice_enabled is per-agent (see Agent model).
+    # groq_api_key is separate from gemini_api_key: Groq is used only for
+    # voice, typed chat stays on Gemini. voice_default_voice, when set, is a
+    # Fish Audio reference_id (a voice clone/preset from that account's
+    # voice library) — left unset to use Fish Audio's default voice, since
+    # the free s2.1-pro-free model was only confirmed working with no
+    # reference_id specified.
+    groq_api_key: str | None = None
+    fish_audio_api_key: str | None = None
+    voice_default_voice: str | None = None
     max_voice_upload_bytes: int = 10 * 1024 * 1024
 
     # --- Billing (Step 9) ---

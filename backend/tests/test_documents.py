@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.models import Chunk, Document
-from app.services import document_ingestion
+from app.services import document_ingestion, firecrawl
 from tests.test_auth import PASSWORD, bearer, register
 from tests.test_public import make_active_agent
 
@@ -484,3 +484,214 @@ async def test_unreachable_url_is_marked_failed_not_a_500(client, monkeypatch):
     )
     assert response.status_code == 201
     assert response.json()["status"] == "failed"
+
+
+# --------------------------------------------------------------------------
+# Website-crawl ingestion (Firecrawl, httpx.MockTransport — no real network)
+# --------------------------------------------------------------------------
+def _install_fake_firecrawl(monkeypatch, poll_responses: list[dict], start_status: int = 200):
+    """`poll_responses` is consumed one response per GET /v1/crawl/{id} call
+    — the last entry repeats if polled more times than the list's length,
+    so a single-entry list (the common "completed on the first poll" case)
+    doesn't need padding."""
+    calls = {"polls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            if start_status != 200:
+                return httpx.Response(start_status, json={"error": "nope"})
+            return httpx.Response(200, json={"success": True, "id": "job123"})
+        index = min(calls["polls"], len(poll_responses) - 1)
+        calls["polls"] += 1
+        return httpx.Response(200, json=poll_responses[index])
+
+    def fake_build_client():
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(firecrawl, "_build_http_client", fake_build_client)
+    monkeypatch.setattr(settings, "crawl_poll_interval_seconds", 0.0)
+    return calls
+
+
+async def test_crawl_creates_one_document_per_page(client, monkeypatch, db_session):
+    _install_fake_firecrawl(
+        monkeypatch,
+        [
+            {
+                "status": "completed",
+                "data": [
+                    {
+                        "markdown": "Home page content here.",
+                        "metadata": {"title": "Home", "url": "https://example.com/"},
+                    },
+                    {
+                        "markdown": "About us content here.",
+                        "metadata": {"title": "About", "url": "https://example.com/about"},
+                    },
+                ],
+            }
+        ],
+    )
+    tokens = await register(client)
+    agent_id = await make_agent_id(client, tokens)
+
+    response = await client.post(
+        f"{PREFIX}/agents/{agent_id}/documents/crawl",
+        json={"url": "https://example.com", "limit": 10},
+        headers=bearer(tokens),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert len(body["items"]) == 2
+    assert {d["title"] for d in body["items"]} == {"Home", "About"}
+    assert all(d["source_type"] == "crawl" for d in body["items"])
+    assert all(d["status"] == "ready" for d in body["items"])
+
+    rows = list(await db_session.scalars(select(Document).where(Document.source_type == "crawl")))
+    assert len(rows) == 2
+
+
+async def test_crawl_polls_until_completed(client, monkeypatch):
+    calls = _install_fake_firecrawl(
+        monkeypatch,
+        [
+            {"status": "scraping", "data": []},
+            {"status": "scraping", "data": []},
+            {
+                "status": "completed",
+                "data": [
+                    {"markdown": "Content.", "metadata": {"title": "Page", "url": "https://example.com/"}}
+                ],
+            },
+        ],
+    )
+    tokens = await register(client)
+    agent_id = await make_agent_id(client, tokens)
+
+    response = await client.post(
+        f"{PREFIX}/agents/{agent_id}/documents/crawl",
+        json={"url": "https://example.com"},
+        headers=bearer(tokens),
+    )
+    assert response.status_code == 201, response.text
+    assert len(response.json()["items"]) == 1
+    assert calls["polls"] == 3  # two "still scraping" polls, then completed
+
+
+async def test_crawl_request_caps_limit_at_max_crawl_pages(client, monkeypatch):
+    monkeypatch.setattr(settings, "max_crawl_pages", 5)
+    requested_limits: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            import json as _json
+
+            requested_limits.append(_json.loads(request.content)["limit"])
+            return httpx.Response(200, json={"success": True, "id": "job123"})
+        return httpx.Response(200, json={"status": "completed", "data": []})
+
+    monkeypatch.setattr(
+        firecrawl, "_build_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(settings, "crawl_poll_interval_seconds", 0.0)
+
+    tokens = await register(client)
+    agent_id = await make_agent_id(client, tokens)
+    response = await client.post(
+        f"{PREFIX}/agents/{agent_id}/documents/crawl",
+        json={"url": "https://example.com", "limit": 100},  # over max_crawl_pages
+        headers=bearer(tokens),
+    )
+    assert response.status_code == 201, response.text
+    assert requested_limits == [5]  # capped server-side, not the requested 100
+
+
+async def test_crawl_start_failure_is_a_clean_error(client, monkeypatch):
+    _install_fake_firecrawl(monkeypatch, [{"status": "completed", "data": []}], start_status=500)
+    tokens = await register(client)
+    agent_id = await make_agent_id(client, tokens)
+
+    response = await client.post(
+        f"{PREFIX}/agents/{agent_id}/documents/crawl",
+        json={"url": "https://example.com"},
+        headers=bearer(tokens),
+    )
+    # No Document exists yet at this point — a clean error, not a 500.
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "crawl_failed"
+
+
+async def test_crawl_timeout_is_a_clean_error(client, monkeypatch):
+    _install_fake_firecrawl(monkeypatch, [{"status": "scraping", "data": []}])
+    monkeypatch.setattr(settings, "crawl_poll_timeout_seconds", 0.0)
+    tokens = await register(client)
+    agent_id = await make_agent_id(client, tokens)
+
+    response = await client.post(
+        f"{PREFIX}/agents/{agent_id}/documents/crawl",
+        json={"url": "https://example.com"},
+        headers=bearer(tokens),
+    )
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "crawl_failed"
+
+
+async def test_crawl_page_with_no_extractable_text_is_marked_failed_others_still_succeed(
+    client, monkeypatch
+):
+    _install_fake_firecrawl(
+        monkeypatch,
+        [
+            {
+                "status": "completed",
+                "data": [
+                    {"markdown": "", "metadata": {"title": "Empty", "url": "https://example.com/empty"}},
+                    {
+                        "markdown": "Real content.",
+                        "metadata": {"title": "Real", "url": "https://example.com/real"},
+                    },
+                ],
+            }
+        ],
+    )
+    tokens = await register(client)
+    agent_id = await make_agent_id(client, tokens)
+
+    response = await client.post(
+        f"{PREFIX}/agents/{agent_id}/documents/crawl",
+        json={"url": "https://example.com"},
+        headers=bearer(tokens),
+    )
+    assert response.status_code == 201, response.text
+    by_title = {d["title"]: d["status"] for d in response.json()["items"]}
+    assert by_title == {"Empty": "failed", "Real": "ready"}
+
+
+async def test_member_cannot_start_a_crawl(client, db_session):
+    from app.core.security import hash_password
+    from app.models import User
+    from app.models.enums import UserRole
+
+    tokens = await register(client)
+    agent_id = await make_agent_id(client, tokens)
+    owner = await db_session.scalar(select(User).where(User.email == "owner@acme.example.com"))
+    db_session.add(
+        User(
+            tenant_id=owner.tenant_id,
+            email="member2@acme.example.com",
+            hashed_password=hash_password(PASSWORD),
+            role=UserRole.MEMBER,
+        )
+    )
+    await db_session.flush()
+    member_login = await client.post(
+        f"{PREFIX}/auth/login", json={"email": "member2@acme.example.com", "password": PASSWORD}
+    )
+    member_tokens = member_login.json()
+
+    response = await client.post(
+        f"{PREFIX}/agents/{agent_id}/documents/crawl",
+        json={"url": "https://example.com"},
+        headers=bearer(member_tokens),
+    )
+    assert response.status_code == 403

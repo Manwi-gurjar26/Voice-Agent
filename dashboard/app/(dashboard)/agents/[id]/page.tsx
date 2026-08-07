@@ -11,6 +11,7 @@ import {
   formValuesToUpdate,
   type AgentFormValues,
 } from "@/components/agent-form";
+import { KnowledgeBase } from "@/components/knowledge-base";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -116,6 +117,8 @@ export default function EditAgentPage() {
         submitting={submitting}
         submitLabel="Save changes"
       />
+
+      <KnowledgeBase agentId={agent.id} />
     </div>
   );
 }

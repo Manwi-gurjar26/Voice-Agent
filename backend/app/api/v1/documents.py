@@ -12,6 +12,7 @@ from app.models import Agent
 from app.models.enums import UserRole
 from app.schemas.document import (
     DocumentCreate,
+    DocumentCreateCrawl,
     DocumentCreateText,
     DocumentCreateUrl,
     DocumentListResponse,
@@ -65,6 +66,21 @@ async def create_document(
         assert isinstance(payload, DocumentCreateUrl)
         document = await document_service.create_url_document(db, tenant_id, agent.id, payload)
     return DocumentRead.model_validate(document)
+
+
+@router.post(
+    "/crawl",
+    response_model=DocumentListResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Crawl a website and add one document per page found",
+)
+async def crawl_documents(
+    payload: DocumentCreateCrawl, agent: OwnedAgent, db: DbSession, tenant_id: TenantId, _: WriteAccess
+) -> DocumentListResponse:
+    documents = await document_service.create_crawl_documents(
+        db, tenant_id, agent.id, payload.url, payload.limit
+    )
+    return DocumentListResponse(items=[DocumentRead.model_validate(d) for d in documents])
 
 
 @router.post(

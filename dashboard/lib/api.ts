@@ -6,6 +6,8 @@ import type {
   AgentUpdate,
   ApiErrorBody,
   CheckoutSessionResponse,
+  DocumentCreateCrawl,
+  DocumentListResponse,
   LoginRequest,
   MeResponse,
   PaidPlan,
@@ -174,6 +176,22 @@ export function updateAgent(id: string, payload: AgentUpdate): Promise<AgentRead
 
 export async function deleteAgent(id: string): Promise<void> {
   await authedRequest<void>(`/agents/${id}`, { method: "DELETE" });
+}
+
+export function listDocuments(agentId: string): Promise<DocumentListResponse> {
+  return authedRequest<DocumentListResponse>(`/agents/${agentId}/documents`);
+}
+
+/** Starts a Firecrawl crawl and waits for the backend's synchronous
+ * response — ingestion (including the crawl itself) runs within this one
+ * request, so this can take a while for a many-page site; see the
+ * backend's crawl_poll_timeout_seconds. */
+export function crawlWebsite(agentId: string, payload: DocumentCreateCrawl): Promise<DocumentListResponse> {
+  return authedRequest<DocumentListResponse>(`/agents/${agentId}/documents/crawl`, jsonInit("POST", payload));
+}
+
+export async function deleteDocument(agentId: string, documentId: string): Promise<void> {
+  await authedRequest<void>(`/agents/${agentId}/documents/${documentId}`, { method: "DELETE" });
 }
 
 export function createCheckoutSession(plan: PaidPlan): Promise<CheckoutSessionResponse> {

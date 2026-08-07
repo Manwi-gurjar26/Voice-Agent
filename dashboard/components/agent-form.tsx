@@ -15,7 +15,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ALLOWED_VOICE_IDS } from "@/lib/types";
 import type { AgentCreate, AgentRead, AgentStatus, AgentUpdate, EffortLevel } from "@/lib/types";
 
 const EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
@@ -247,24 +246,12 @@ export function AgentForm({ mode, defaultValues, onSubmit, submitting, submitLab
         </div>
         {voiceEnabled && (
           <div className="flex flex-col gap-2">
-            <Label htmlFor="voice_id">Voice</Label>
-            <Controller
-              control={control}
-              name="voice_id"
-              render={({ field }) => (
-                <Select value={field.value || undefined} onValueChange={field.onChange}>
-                  <SelectTrigger id="voice_id" className="w-full sm:w-48">
-                    <SelectValue placeholder="Default (en_US-lessac-medium)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ALLOWED_VOICE_IDS.map((voiceId) => (
-                      <SelectItem key={voiceId} value={voiceId}>
-                        {voiceId}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+            <Label htmlFor="voice_id">Voice (Fish Audio reference ID, optional)</Label>
+            <Input
+              id="voice_id"
+              className="w-full sm:w-72"
+              placeholder="Leave blank for the default voice"
+              {...register("voice_id")}
             />
           </div>
         )}

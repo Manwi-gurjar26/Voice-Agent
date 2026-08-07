@@ -507,42 +507,55 @@ pipeline as typed messages → speak the reply. A continuously-listening,
 interruptible voice call (streaming STT, voice-activity detection, barge-in)
 is a materially larger effort and was deliberately left out of this step.
 
-**Update: swapped to fully local, free STT/TTS — no API key, no billing,
-ever.** Originally OpenAI (Whisper for STT, `tts-1` for TTS). Voice is
-otherwise the one feature in this whole platform that structurally requires
-a paid, metered API, and this project cannot take on any billing — so
-`app/services/voice.py` now runs `faster-whisper` (a CTranslate2-based local
-Whisper implementation) for STT and Piper (a fast local neural TTS engine)
-for TTS, both entirely on CPU with zero network calls after their model
-files are cached once. This is not a new architectural idea for this
-codebase — it's the exact pattern `app/services/embeddings.py` already used
-for RAG in Step 5 (a local `sentence-transformers` model instead of a hosted
-API), just applied to voice. `Agent.voice_id` is now validated against a
-small set of real Piper voice names (`ALLOWED_VOICE_IDS` in
-`app/schemas/agent.py`) — `en_US-lessac-medium`, `en_US-amy-medium`,
-`en_US-ryan-medium`, `en_GB-alan-medium` — each individually confirmed
-downloadable before being added, not assumed from Piper's voice list.
+**Update: swapped again, this time to Gemini's own speech models.** Local,
+free STT/TTS (`faster-whisper` + Piper) came first specifically to avoid
+billing — see git history. Later replaced with Gemini's speech models on
+request, since both are reachable on the exact same free-tier API key
+already used for text chat (`app/services/llm.py`): this project's Google
+Cloud project has no billing account attached, so usage beyond the free
+tier fails outright with a clean error rather than silently charging
+anything. `app/services/voice.py` now uses:
+- **`gemini-3.1-flash-live-preview`** (STT) — Gemini's real-time "Live" API
+  (`bidiGenerateContent`), used here in a single-turn, push-to-talk way:
+  `activity_start` → one already-fully-recorded clip → `activity_end`, not a
+  continuous streaming conversation. Automatic voice-activity detection was
+  tried first and, against the real API, never fired `turn_complete` for a
+  single pre-recorded clip (nothing about VAD's silence-after-speech
+  heuristic applies to audio that arrives all at once) — manual activity
+  boundaries fixed that, confirmed against the real API before shipping.
+- **`gemini-3.1-flash-tts-preview`** (TTS) — a plain `generateContent` call,
+  no session involved. Its free-tier quota is tight (3 requests/minute per
+  project, confirmed by actually hitting a 429 while verifying this) —
+  worth knowing before assuming voice will hold up under concurrent traffic.
 
-**A real client-object seam, unlike the old OpenAI code's shared one.**
-`voice.py` now has two independent seams, `get_whisper_model()` and
-`get_piper_voice(voice_id)`, rather than one shared client — STT and TTS are
-two unrelated local models with no client object in common, unlike OpenAI's
-single `AsyncOpenAI` instance serving both. Both are lazily constructed and
-cached (Piper per voice ID, since an agent can pick any of the four), and
-both wrap model construction in a try/except that raises
-`VoiceUnavailableError` — the local equivalent of the old "no API key
-configured" condition, now covering a genuinely different failure mode (a
-cold cache with no internet on first run) rather than a missing credential.
+`Agent.voice_id` is validated against a small set of real Gemini prebuilt
+voice names (`ALLOWED_VOICE_IDS` in `app/schemas/agent.py`) — `Kore`,
+`Puck`, `Charon` — each individually confirmed working against the live API
+before being added, not assumed from Gemini's full voice catalog (kept
+deliberately small given the 3 req/min ceiling above).
 
-**Decoding is format-agnostic, unlike the old filename-hint approach.**
-OpenAI's transcription API used the uploaded filename's extension as a
-format hint; faster-whisper instead decodes directly from a byte stream via
-PyAV (bundled ffmpeg, no system dependency to install), so `transcribe_audio`
-no longer takes or needs a `filename` argument at all — confirmed against
-the *exact* format the widget really sends, not assumed: a WAV file was
-re-encoded to WebM/Opus with PyAV by hand (matching `voiceCapture.ts`'s real
-`MediaRecorder` output) and decoded correctly straight from an in-memory
-`BytesIO`, no temp file.
+**Both STT and TTS reuse the one shared Gemini client seam.** Unlike the
+old local-model version's two independent `get_whisper_model()`/
+`get_piper_voice()` seams, both functions now call `llm.get_gemini_client()`
+— the same seam text chat already uses — so tests fake `voice.transcribe_audio`
+/`voice.synthesize_speech` directly rather than a lower-level client object.
+Both still raise `VoiceUnavailableError` on failure, now covering a Gemini
+outage, malformed audio the decoder can't handle, or an unexpected API
+response shape instead of a cold model cache with no internet.
+
+**The Live model's own auto-generated reply is discarded entirely.** A Live
+session always produces a conversational response of its own, but only its
+`input_transcription` is used — the actual reply text still comes from
+`chat_service.complete_turn`, unchanged, which is what does this app's RAG
+retrieval, citations, and quota accounting. None of that belongs to
+Gemini's speech models, so grounding/citations work identically for spoken
+and typed questions.
+
+**Decoding is format-agnostic, same reasoning as before, different library.**
+`av` (PyAV, bundled ffmpeg) decodes whatever the browser recorded (WebM/Opus
+or MP4/AAC) and resamples it to the raw 16-bit PCM the Live API's realtime
+input expects — `faster-whisper` decoded the same formats directly, so this
+swap didn't change what the widget can send, only how the backend reads it.
 
 **The voice endpoint reuses the text pipeline's guts, not a parallel one.**
 `chat_service.stream_turn` (SSE, for typed messages) and the new
@@ -588,36 +601,30 @@ what was previously `sendMessage`-only code) as typed messages.
 **Testing.** Backend: 14 tests (`test_voice.py`) covering the happy path,
 `voice_enabled=false` rejection, oversized uploads, empty transcripts,
 transcription/LLM/TTS failures, quota exhaustion, missing/wrong session or
-origin, and the preflight route — `get_whisper_model`/`get_piper_voice`
-faked at their seams, no real model load needed to run these, matching the
-existing `get_anthropic_client` fake-seam pattern. A dedicated
+origin, and the preflight route — `voice.transcribe_audio`/
+`voice.synthesize_speech` faked directly at the function boundary (not the
+lower-level Gemini client), matching `test_chat.py`'s `install_fake_client`
+seam pattern; no real network call needed to run these. A dedicated
 `test_voice_models.py` (1 test, mirroring `test_embeddings.py`'s role for
-the RAG embedding model) runs the *real* Whisper and Piper models with no
-mocking at all — full suite now 230 tests. Widget: unchanged by this swap
-(27 pre-existing voice tests still pass) — the widget only ever dealt with
-recording and playing back audio, never which provider transcribed or
-synthesized it; `audio_mime` in its test fixtures was updated from
-`audio/mpeg` to `audio/wav` for accuracy, not because any widget logic
-changed (`decodeAudioToUrl` already builds its `Blob` from whatever mime the
-backend sends, with no format-specific branching).
+the RAG embedding model) runs the *real* Gemini STT/TTS round trip with no
+mocking at all — skipped automatically if no `GEMINI_API_KEY` is configured,
+since unlike the old local-model version this one genuinely needs network
+access. Widget: unchanged by this swap — it only ever dealt with recording
+and playing back audio, never which provider transcribed or synthesized it.
 
-**Live verification: complete for what this swap actually owns, honestly
-partial for what it doesn't.** `test_voice_models.py` proves the core claim
-for free: real Piper-synthesized speech, decoded by real faster-whisper, at
-CPU speed, no network calls, matching "What can you help me with today?"
-back exactly. Beyond the automated suite, a real signed-up tenant, a real
-voice-enabled agent (`voice_id: en_US-lessac-medium`), and a real recording
-of "What are your business hours?" were sent through the actual running
-`/voice-messages` endpoint against a live server — the backend log shows
-`faster_whisper: Detected language 'en' with probability 0.99` and the
-exact transcribed text reaching the LLM request payload, byte for byte. That
-request then failed with the same pre-existing `llm_error` documented in
-Step 4/6 (no `GEMINI_API_KEY` configured in this environment at the time) —
-a Step 4 dependency this swap never touched, not a new gap. **Voice's own
-paid-API dependency is now fully eliminated and fully verified; a complete
-spoken-question-to-spoken-answer demo still needs a working (free-tier)
-Gemini key,** exactly as it would for a *typed* question, and for the same
-reason.
+**Live verification, against the real API, not assumed from docs.** Before
+writing the implementation: confirmed `gemini-3.1-flash-live-preview` and
+`gemini-3.1-flash-tts-preview` actually exist and are reachable on this
+project's key (a naive `models.list()` call missed them the first time —
+the API paginates past 50 models, and both sit on page 2); confirmed no
+billing-required error occurs on either; found and fixed the automatic-VAD
+hang described above; and ran a real synthesize → transcribe round trip
+(`test_voice_models.py`) that recovered the original text exactly. Separately,
+a real signed-up tenant's voice-enabled agent was sent a real recording of
+"What are your refund and return policies?" through the actual running
+`/voice-messages` endpoint — transcribed correctly, answered by the same
+RAG-grounded pipeline as typed messages, and spoken back — end to end,
+against the live server, not a mock.
 
 ## Dashboard (Step 8)
 

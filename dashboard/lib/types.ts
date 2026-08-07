@@ -9,16 +9,6 @@ export type UserRole = "owner" | "admin" | "member";
 export type AgentStatus = "draft" | "active" | "disabled";
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
-// Local Piper voice names — mirrors ALLOWED_VOICE_IDS in
-// backend/app/schemas/agent.py.
-export const ALLOWED_VOICE_IDS = [
-  "en_US-lessac-medium",
-  "en_US-amy-medium",
-  "en_US-ryan-medium",
-  "en_GB-alan-medium",
-] as const;
-export type VoiceId = (typeof ALLOWED_VOICE_IDS)[number];
-
 export interface AgentTheme {
   primaryColor?: string;
   position?: "bottom-right" | "bottom-left" | string;
@@ -131,6 +121,30 @@ export interface AgentRead {
 export interface AgentListResponse {
   items: AgentRead[];
   total: number;
+}
+
+export type DocumentSourceType = "text" | "file" | "url" | "crawl";
+export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
+
+export interface DocumentRead {
+  id: string;
+  source_type: DocumentSourceType;
+  title: string;
+  source_url: string | null;
+  original_filename: string | null;
+  status: DocumentStatus;
+  error_message: string | null;
+  char_count: number | null;
+  created_at: string;
+}
+
+export interface DocumentListResponse {
+  items: DocumentRead[];
+}
+
+export interface DocumentCreateCrawl {
+  url: string;
+  limit?: number;
 }
 
 export interface ApiErrorBody {

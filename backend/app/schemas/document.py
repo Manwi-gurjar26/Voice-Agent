@@ -39,6 +39,13 @@ DocumentCreate = Annotated[
 ]
 
 
+class DocumentCreateCrawl(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+    # Capped server-side too (settings.max_crawl_pages) — this is a UX
+    # convenience, not the actual limit enforcement.
+    limit: int = Field(default=20, ge=1, le=100)
+
+
 class DocumentRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
