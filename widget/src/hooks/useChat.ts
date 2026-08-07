@@ -198,11 +198,19 @@ export function useChat(api: ApiClient, publicKey: string): ChatState {
     if (isSending || status !== "ready" || !sessionTokenRef.current) return;
 
     setErrorBanner(null);
+    // Transcription + local TTS runs on CPU and can take a while — placeholder
+    // bubbles go up immediately (mirroring sendMessage's streaming assistant
+    // bubble) so the panel doesn't look frozen while that happens. Both get
+    // patched in place once the real transcript/reply come back.
+    const userMessageId = `local-user-${Date.now()}`;
+    const assistantMessageId = `local-assistant-${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      { id: userMessageId, role: "user", content: "🎤 Voice message", citations: null, status: "complete" },
+      { id: assistantMessageId, role: "assistant", content: "", citations: null, status: "streaming" },
+    ]);
     setIsSending(true);
 
-    // Unlike sendMessage, nothing is appended optimistically — a voice turn
-    // is one request/response (no deltas to stream into a placeholder), so
-    // both bubbles are added together once the transcript and reply exist.
     let result: { audioUrl: string } | undefined;
 
     async function attemptVoiceSend(): Promise<void> {
@@ -218,23 +226,21 @@ export function useChat(api: ApiClient, publicKey: string): ChatState {
       }
 
       const reply = await api.sendVoiceMessage(token, conversationId, audioBlob, filename);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `local-user-${Date.now()}`,
-          role: "user",
-          content: reply.transcript,
-          citations: null,
-          status: "complete",
-        },
-        {
-          id: reply.message.id,
-          role: "assistant",
-          content: reply.message.content,
-          citations: reply.message.citations,
-          status: "complete",
-        },
-      ]);
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id === userMessageId) return { ...m, content: reply.transcript };
+          if (m.id === assistantMessageId) {
+            return {
+              ...m,
+              id: reply.message.id,
+              content: reply.message.content,
+              citations: reply.message.citations,
+              status: "complete",
+            };
+          }
+          return m;
+        }),
+      );
       result = reply.audio_base64
         ? { audioUrl: decodeAudioToUrl(reply.audio_base64, reply.audio_mime) }
         : undefined;
@@ -244,6 +250,7 @@ export function useChat(api: ApiClient, publicKey: string): ChatState {
       await withSessionRetry(attemptVoiceSend, (err) => {
         const code = err instanceof ApiError ? err.code : "unknown_error";
         setErrorBanner(friendlyErrorMessage(code));
+        setMessages((prev) => prev.map((m) => (m.id === assistantMessageId ? { ...m, status: "failed" } : m)));
       });
     } finally {
       setIsSending(false);

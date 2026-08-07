@@ -3,7 +3,9 @@ import type { JSX } from "preact";
 import { createApiClient } from "./api";
 import { useChat } from "./hooks/useChat";
 import { Launcher } from "./components/Launcher";
+import { VoiceLauncher } from "./components/VoiceLauncher";
 import { ChatPanel } from "./components/ChatPanel";
+import { isVoiceCaptureSupported } from "./voiceCapture";
 
 interface AppProps {
   baseUrl: string;
@@ -46,6 +48,15 @@ export function App({ baseUrl, publicKey }: AppProps) {
     chat.sendMessage(content);
   }
 
+  // The floating voice button deliberately never opens the panel on a
+  // successful turn (that's the whole point of it being separate) — but a
+  // mic-permission/unsupported-browser error has nowhere else to be shown,
+  // since ErrorBanner only renders inside the (closed) panel.
+  function handleVoiceLauncherError(message: string) {
+    setVoiceError(message);
+    setOpen(true);
+  }
+
   async function handleVoiceMessage(audio: Blob, filename: string) {
     setVoiceError(null);
     const result = await chat.sendVoiceMessage(audio, filename);
@@ -74,6 +85,15 @@ export function App({ baseUrl, publicKey }: AppProps) {
           voiceEnabled={voice_enabled}
           onVoiceMessage={handleVoiceMessage}
           onVoiceError={setVoiceError}
+        />
+      )}
+      {!open && voice_enabled && isVoiceCaptureSupported() && (
+        <VoiceLauncher
+          position={position}
+          agentName={name}
+          disabled={chat.isSending}
+          onRecordingComplete={handleVoiceMessage}
+          onError={handleVoiceLauncherError}
         />
       )}
       <Launcher open={open} position={position} agentName={name} onToggle={() => setOpen((v) => !v)} />

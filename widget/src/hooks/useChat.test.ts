@@ -410,7 +410,7 @@ describe("useChat", () => {
       expect(result.current.errorBanner).toBeNull();
     });
 
-    it("shows a friendly error and appends nothing when the retry also fails", async () => {
+    it("shows a friendly error and marks the placeholder assistant bubble failed when the retry also fails", async () => {
       const api = makeApi({
         sendVoiceMessage: vi
           .fn()
@@ -423,7 +423,12 @@ describe("useChat", () => {
         await result.current.sendVoiceMessage(AUDIO, "recording.webm");
       });
 
-      expect(result.current.messages).toHaveLength(0);
+      // The optimistic placeholder pair (added the moment recording finished,
+      // so the panel doesn't look frozen during processing) stays — the
+      // assistant bubble is marked failed rather than removed, same as a
+      // failed text send.
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[1]?.status).toBe("failed");
       expect(result.current.errorBanner).toBe("Your session expired. Please refresh the page.");
     });
 
@@ -441,7 +446,8 @@ describe("useChat", () => {
       });
 
       expect(api.createSession).toHaveBeenCalledTimes(1); // bootstrap only, no retry
-      expect(result.current.messages).toHaveLength(0);
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.messages[1]?.status).toBe("failed");
       expect(result.current.errorBanner).toBe("Something went wrong. Please try again.");
     });
 

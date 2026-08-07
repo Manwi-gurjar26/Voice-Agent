@@ -67,6 +67,62 @@
   height: 26px;
 }
 
+/* --- Voice launcher: a separate button above the chat bubble, so voice is
+   its own visible entry point instead of hidden inside the chat panel --- */
+.va-voice-launcher {
+  position: fixed;
+  bottom: 86px;
+  z-index: 2147483000;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #fff;
+  color: var(--va-primary);
+  border: 2px solid var(--va-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  transition: transform 0.15s ease;
+}
+
+.va-voice-launcher:hover {
+  transform: scale(1.06);
+}
+
+.va-voice-launcher.va-pos-right {
+  right: 24px;
+}
+
+.va-voice-launcher.va-pos-left {
+  left: 24px;
+}
+
+.va-voice-launcher svg {
+  width: 20px;
+  height: 20px;
+}
+
+.va-voice-launcher.va-voice-recording {
+  background: #e0433a;
+  color: #fff;
+  border-color: #e0433a;
+  animation: va-mic-pulse 1.4s infinite ease-in-out;
+}
+
+.va-spin {
+  animation: va-spin-rotate 0.9s linear infinite;
+}
+
+@keyframes va-spin-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* --- Panel --- */
 .va-panel {
   position: fixed;
