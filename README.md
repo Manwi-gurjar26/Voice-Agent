@@ -821,6 +821,81 @@ preflight and the actual response headers for a cross-origin request from
 `http://localhost:3000` — all via `curl` replicating the exact request
 shapes `lib/api.ts` sends, the same rigor as Steps 6-7.
 
+**Update: the UI was redesigned end to end.** Everything above describes the
+behaviour, which is unchanged; this pass replaced how it looks. The starting
+point was stock shadcn with an all-zero-chroma greyscale palette, no icons,
+no dark mode reachable anywhere in the UI, and a plain `<table>` of agents.
+
+- **A real palette, in OKLCH.** A violet→indigo→cyan brand ramp
+  (`--brand-1/2/3`) drives gradients, the logo, the usage ring and the 3D
+  orb. Light and dark share one hue family and differ only in
+  lightness/chroma, so they read as the same product. Shadows are tinted
+  with the brand hue in four elevation steps (`--elev-1..4`) rather than
+  neutral black.
+- **`next-themes` was already installed, already wired up in
+  `providers.tsx`, and completely unreachable** — nothing rendered a
+  toggle, so the dark palette could never be selected. There is now a
+  light/system/dark control in both the auth and dashboard chrome.
+- **A real `--font-sans` bug, fixed in passing.** `@theme` mapped
+  `--font-sans: var(--font-sans)` — a self-reference to an undefined
+  variable — while `layout.tsx` defines `--font-geist-sans`. Geist was
+  loaded on every page and then never actually applied; the app had been
+  rendering in the Tailwind default stack.
+- **3D without a 3D library.** `VoiceOrb` is a wireframe sphere built from
+  real `rotateY`/`rotateX`-transformed rings inside a `preserve-3d` rotor,
+  with latitude radii computed as `sqrt(1 - offset²)` so the rings actually
+  sit on the sphere rather than floating at arbitrary sizes; `Tilt` applies
+  cursor-tracked perspective rotation plus a specular glare to cards. Both
+  are pure CSS transforms on the compositor — a three.js scene would have
+  been ~150KB gzipped for decoration. `Tilt` opts out entirely for
+  reduced-motion users, touch input (no hover to track), and non-mouse
+  pointers.
+- **Motion is suppressed, not slowed, under `prefers-reduced-motion`.**
+  Nothing in the UI conveys information through motion alone, so removing it
+  costs nothing.
+- **Two genuine UX gaps closed while in here:** the embed snippet — the one
+  string every customer must move out of this dashboard — had no copy
+  button and could only be hand-selected out of a `<pre>`; and the widget's
+  colour and position settings were invisible until the agent was embedded
+  on a real site and reloaded, so the appearance section now renders a live
+  miniature driven by those two fields.
+- **Billing quotas are mirrored from the backend, prices are not.**
+  `PLAN_QUOTAS` in the billing page mirrors
+  `backend/app/services/billing.py`'s real numbers (1k/10k/50k/500k). No
+  prices are shown anywhere: they live in the merchant's Dodo dashboard and
+  differ per environment, so any number here would risk being a wrong one.
+  Nothing in the backend gates features by tier, so the page says exactly
+  that rather than inventing a feature matrix.
+
+**Two pre-existing lint errors were fixed rather than worked around.**
+`npm run lint` was already failing before this pass — the Firecrawl
+knowledge-base component (added earlier the same day) called `setState`
+synchronously inside an effect, which is a real React 19 lint error that
+was never caught because lint had not been run on it. Its loader now lives
+inside the effect with a reload token, which also makes its cancellation
+flag actually work. Separately, `agent-form.tsx` moved from
+`form.watch(...)` to `useWatch(...)` — the React-Compiler-compatible
+subscription API — clearing an `incompatible-library` warning that had been
+there since the form was written.
+
+**Verification.** All 59 dashboard tests still pass unchanged, plus
+`tsc --noEmit`, `eslint` (now clean, see above) and a real `next build`.
+Beyond that, the containerised stack was rebuilt and driven with Playwright
+against the real backend: signup, login, the agent grid, an agent's detail
+page, and billing were each screenshotted in both light and dark with zero
+console or page errors. That pass caught a defect the automated suite
+structurally cannot — the sticky save bar on the agent form used the
+standard glass opacity, so the section heading scrolling underneath showed
+straight through its own label; it is near-opaque now.
+
+**One test-environment change was needed.** jsdom implements no media-query
+engine, so `window.matchMedia` is simply absent — components that adapt to
+`prefers-reduced-motion` / `hover: hover` would throw on mount there while
+working in every real browser. `test-setup.ts` now stubs it, defaulting to
+"does not match" (the conservative branch). Coding defensively around
+`matchMedia` in product code would have been the wrong fix: every browser
+since IE10 has it.
+
 **Update: real click-through browser testing, now done.** The same
 Playwright run described in Step 6's update also drives the dashboard
 itself: a real signup form submission (with real client + server-side
