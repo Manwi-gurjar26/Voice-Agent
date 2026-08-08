@@ -57,6 +57,11 @@ services:
       # customer's browser is sent to.
       WIDGET_CDN_URL: ${PUBLIC_ORIGIN:-http://localhost}/widget.js
       DASHBOARD_BASE_URL: ${PUBLIC_ORIGIN:-http://localhost}
+      # AgentRead.embed_snippet's data-api-base — must be the same
+      # browser-reachable origin as the two above, or a customer's pasted
+      # snippet silently fails to mount on their own site (see that
+      # property's docstring).
+      PUBLIC_BASE_URL: ${PUBLIC_ORIGIN:-http://localhost}
       DASHBOARD_CORS_ORIGINS: ${PUBLIC_ORIGIN:-http://localhost}
     depends_on:
       postgres:

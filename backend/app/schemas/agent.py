@@ -116,10 +116,21 @@ class AgentRead(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def embed_snippet(self) -> str:
-        """Copy-paste snippet for the customer's site."""
+        """Copy-paste snippet for the customer's site.
+
+        Includes `data-api-base` explicitly rather than relying on the
+        widget's build-time `VITE_API_BASE_URL` fallback — a customer's
+        pasted snippet must work standalone on their site, and previously
+        didn't: without this attribute the widget logged "no API base URL
+        configured" and silently refused to mount, found by testing this
+        exact snippet on a real external page, not just in this repo's own
+        dev harness (which always had `VITE_API_BASE_URL` set).
+        """
+        api_base = f"{settings.public_base_url}{settings.api_v1_prefix}"
         return (
             f'<script src="{settings.widget_cdn_url}" '
-            f'data-agent-key="{self.public_key}" async></script>'
+            f'data-agent-key="{self.public_key}" '
+            f'data-api-base="{api_base}" async></script>'
         )
 
 
