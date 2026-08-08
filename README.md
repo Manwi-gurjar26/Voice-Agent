@@ -92,6 +92,7 @@ detect table or column renames — it emits a drop plus an add, which loses data
 | `GET`/`PATCH`/`DELETE` | `/agents/{id}` | access token | Write: owner/admin |
 | `GET`/`POST` | `/agents/{agent_id}/documents` | access token | List / add a document (pasted text or URL). Read: any role. Write: owner/admin |
 | `POST` | `/agents/{agent_id}/documents/upload` | access token | Add a document from a `.txt`/`.md`/`.pdf` file upload |
+| `POST` | `/agents/{agent_id}/documents/crawl` | access token | Crawl a website (Firecrawl); one document per page found |
 | `GET`/`DELETE` | `/agents/{agent_id}/documents/{id}` | access token | Fetch / delete one document (cascades to its chunks) |
 | `GET` | `/public/agents/{public_key}/config` | origin allowlist | Widget bootstrap (name, greeting, theme) |
 | `POST` | `/public/agents/{public_key}/sessions` | origin allowlist | Issues a widget session token |
@@ -99,6 +100,7 @@ detect table or column renames — it emits a drop plus an add, which loses data
 | `POST` | `/public/conversations` | widget session token | Starts a new chat thread |
 | `GET` | `/public/conversations/{id}/messages` | widget session token | Full message history |
 | `POST` | `/public/conversations/{id}/messages` | widget session token | Sends a message; streams the reply as SSE |
+| `POST` | `/public/conversations/{id}/voice-messages` | widget session token | Sends a recorded utterance; returns transcript + reply + spoken audio |
 
 ## Design decisions worth knowing
 
@@ -329,6 +331,72 @@ none was supplied. Adding more pages means adding more URLs, one at a time.
 The response body is capped by actually counting bytes as they stream in,
 not by trusting a `Content-Length` header a server could lie about or omit.
 
+**Update: a real crawler was added — Firecrawl, one Document per page
+discovered, not one Document for the whole site.** `POST
+/agents/{agent_id}/documents/crawl` (`app/services/firecrawl.py`) hands a
+seed URL to Firecrawl's own `/v1/crawl` job, which runs asynchronously on
+Firecrawl's servers; this backend polls `/v1/crawl/{id}` until `status ==
+"completed"`, still within the one synchronous request (`crawl_poll_timeout_seconds`
+bounds the wait, same tradeoff as the rest of ingestion above). Each
+discovered page becomes its own `Document` (`source_type='crawl'`) and runs
+through the *exact same* `ingest_document` chunk/embed pipeline as a
+pasted-text or single-URL document — a crawl isn't a parallel RAG system,
+it's a bulk way to create the same kind of rows. `Document.source_type`'s
+CHECK constraint gained `'crawl'` via a real migration (drop + recreate,
+since Postgres has no `ALTER CHECK`). The dashboard's agent edit page gained
+a "Knowledge base" section (`components/knowledge-base.tsx`) to trigger a
+crawl and see/delete the resulting documents — the first UI this platform
+has ever had for the knowledge base at all; every other ingestion path
+(paste/upload/single-URL) still only exists as an API endpoint.
+
+**The response shape was confirmed against the real API, not assumed —
+same discipline as everywhere else in this project.** A live test crawl
+against a real site was run and polled to completion before writing
+`firecrawl.py`'s parsing code: `data` is a list of `{"markdown": ...,
+"metadata": {"title": ..., "url": ..., "sourceURL": ..., ...}}` objects —
+`metadata.url` is the actual page URL, `metadata.sourceURL` is the *seed*
+URL the crawl started from (identical to `url` only for the first page).
+Using the wrong one would have mislabeled every citation with the site's
+homepage instead of the page a chunk actually came from.
+
+**`max_crawl_pages` exists because Firecrawl bills per page scraped, from a
+fixed monthly free-tier credit pool shared by every crawl any tenant
+runs.** A crawl's requested `limit` is capped server-side at
+`settings.max_crawl_pages` (default 20) regardless of what the request
+asks for — one tenant crawling a 500-page site shouldn't be able to burn
+through credits every other tenant's agents also depend on. Separately, the
+free tier also rate-limits *requests per minute*, independent of remaining
+credits — confirmed live by triggering a real `429 Too Many Requests` on
+`/v1/crawl` immediately after a credit-balance check showed **no** shortage
+(1015/1000 credits remaining), which is what proves it's a transient
+rate-limit, not exhausted quota: the fix is waiting a minute, not adding
+funds.
+
+**A crawl target has to be genuinely public — the same constraint as
+anything else this backend fetches over HTTP, just easier to trip over
+here.** Firecrawl's crawler runs on Firecrawl's own servers, not this
+machine — `localhost` (or any private-network address) in a crawl request
+means "Firecrawl's own server," not the machine that sent the request, so
+it can never reach a site that only exists on a developer's laptop.
+Verified for real twice: once against a hand-built 4-page demo site
+(`localhost`, tunneled public for free via `localhost.run`, then crawled
+for real — 4 Documents, all `ready`, correct titles, real chunks/embeddings
+in Postgres), and once against a user's own already-running local Streamlit
+app, where the same constraint applied identically.
+
+**A real retrieval-threshold bug, found via that same live crawl test, not
+a synthetic one.** `retrieval_min_similarity` (0.3) rejected a genuinely
+relevant chunk: "What time do you open?" scored 0.24 cosine similarity
+against the About page's chunk that actually answered it — a real crawled
+page mixing several facts (founding story, bean sourcing, roasting
+schedule, hours) into one chunk dilutes similarity for a question about
+just one of those facts. Lowered to 0.2 only after checking the real gap
+against clearly unrelated queries against the same chunk (0.04-0.07,
+sometimes negative) — a comfortable margin on both sides, not a number
+lowered just until one case passed. Re-verified live after the fix: the
+exact same question that previously returned zero citations now answers
+correctly with the About page cited.
+
 **Retrieval is skipped entirely for an agent with no knowledge base yet.**
 `agent_has_chunks()` is a cheap existence check run *before* embedding the
 user's message — the common case (a newly created agent) never pays even a
@@ -507,65 +575,106 @@ pipeline as typed messages → speak the reply. A continuously-listening,
 interruptible voice call (streaming STT, voice-activity detection, barge-in)
 is a materially larger effort and was deliberately left out of this step.
 
-**Update: swapped again, this time to Gemini's own speech models.** Local,
-free STT/TTS (`faster-whisper` + Piper) came first specifically to avoid
-billing — see git history. Later replaced with Gemini's speech models on
-request, since both are reachable on the exact same free-tier API key
-already used for text chat (`app/services/llm.py`): this project's Google
-Cloud project has no billing account attached, so usage beyond the free
-tier fails outright with a clean error rather than silently charging
-anything. `app/services/voice.py` now uses:
-- **`gemini-3.1-flash-live-preview`** (STT) — Gemini's real-time "Live" API
-  (`bidiGenerateContent`), used here in a single-turn, push-to-talk way:
-  `activity_start` → one already-fully-recorded clip → `activity_end`, not a
-  continuous streaming conversation. Automatic voice-activity detection was
-  tried first and, against the real API, never fired `turn_complete` for a
-  single pre-recorded clip (nothing about VAD's silence-after-speech
-  heuristic applies to audio that arrives all at once) — manual activity
-  boundaries fixed that, confirmed against the real API before shipping.
-- **`gemini-3.1-flash-tts-preview`** (TTS) — a plain `generateContent` call,
-  no session involved. Its free-tier quota is tight (3 requests/minute per
-  project, confirmed by actually hitting a 429 while verifying this) —
-  worth knowing before assuming voice will hold up under concurrent traffic.
+**Update: local models, then Gemini's own speech models, now a
+three-provider pipeline — Groq for STT and the reply LLM, Fish Audio for
+TTS.** `faster-whisper` + Piper came first to avoid billing entirely; a
+later pass moved both to Gemini's speech models since they shared the same
+free-tier key as text chat. This pass, on explicit request, moved again:
+- **Groq's `whisper-large-v3-turbo`** (STT) — a plain hosted-Whisper call,
+  no session/streaming involved. Decodes whatever the browser recorded
+  directly (webm/opus or mp4/aac), the upload's real filename passed
+  through as a format hint — same reasoning the original OpenAI-based
+  version had, before local Whisper made the filename irrelevant and Gemini
+  Live made it irrelevant for a different reason (raw PCM, no filename at
+  all). Groq's STT needed no PyAV/format-decoding step this pipeline's
+  Gemini-Live predecessor did — `av` was removed from `requirements.txt`
+  entirely.
+- **Groq's `llama-3.1-8b-instant`** (the *voice-reply* LLM only — typed
+  chat is unaffected and still runs on the agent's configured Gemini
+  model). `chat_service.complete_turn` calls it via a new
+  `app/services/groq_llm.py` client seam instead of
+  `llm.get_gemini_client()`; `_prepare_turn` (shared with `stream_turn`)
+  now returns the raw message history alongside the Gemini-shaped one, so
+  `complete_turn` can build Groq's flat OpenAI-style message list
+  (`_build_groq_messages`) without touching what `stream_turn` still needs.
+  RAG retrieval, citations, and quota accounting are untouched — only which
+  LLM turns the retrieved context into a reply differs for a spoken
+  question.
+- **Fish Audio's `s2.1-pro-free`** (TTS) — genuinely free, but not
+  obviously so: this account's Fish Audio credit balance is `0`, and its
+  *paid* voices correctly 402 with "Insufficient API credit" when called —
+  confirmed live before assuming anything. `s2.1-pro-free` works on that
+  same zero balance without deducting anything, but only when the model is
+  selected via a `model` **HTTP header**, not a JSON body field — the
+  body-field form silently routes to the paid tier and 402s the same way.
+  Found by testing both forms directly against the real API, not from
+  documentation.
 
-`Agent.voice_id` is validated against a small set of real Gemini prebuilt
-voice names (`ALLOWED_VOICE_IDS` in `app/schemas/agent.py`) — `Kore`,
-`Puck`, `Charon` — each individually confirmed working against the live API
-before being added, not assumed from Gemini's full voice catalog (kept
-deliberately small given the 3 req/min ceiling above).
+`Agent.voice_id` is no longer validated against a small fixed allowlist —
+Fish Audio's voice catalog is an open `reference_id` namespace (a voice
+clone/preset from that account's own library), not a handful of prebuilt
+names the way Piper's or Gemini's were, so `ALLOWED_VOICE_IDS` and its
+validator were removed from `app/schemas/agent.py`; the dashboard's voice
+picker is now a plain text field instead of a `<Select>` of known-good
+options.
 
-**Both STT and TTS reuse the one shared Gemini client seam.** Unlike the
-old local-model version's two independent `get_whisper_model()`/
-`get_piper_voice()` seams, both functions now call `llm.get_gemini_client()`
-— the same seam text chat already uses — so tests fake `voice.transcribe_audio`
-/`voice.synthesize_speech` directly rather than a lower-level client object.
-Both still raise `VoiceUnavailableError` on failure, now covering a Gemini
-outage, malformed audio the decoder can't handle, or an unexpected API
-response shape instead of a cold model cache with no internet.
+**STT and TTS no longer share one client seam.** Gemini's version had both
+calls go through `llm.get_gemini_client()`; Groq's STT goes through
+`groq_llm.get_groq_client()` (shared with the voice-reply LLM above) while
+Fish Audio's TTS is a direct `httpx` call with no SDK/client object at all
+(Fish Audio wasn't worth adding a dependency for one endpoint). Tests fake
+`voice.transcribe_audio`/`voice.synthesize_speech` at the function boundary
+either way, so this seam change is invisible to `test_voice.py`. Both still
+raise `VoiceUnavailableError` on failure — now covering a Groq or Fish
+Audio outage instead of a Gemini one.
 
-**The Live model's own auto-generated reply is discarded entirely.** A Live
-session always produces a conversational response of its own, but only its
-`input_transcription` is used — the actual reply text still comes from
-`chat_service.complete_turn`, unchanged, which is what does this app's RAG
-retrieval, citations, and quota accounting. None of that belongs to
-Gemini's speech models, so grounding/citations work identically for spoken
-and typed questions.
+**`audio_mime` changed from `audio/wav` to `audio/mpeg`.** Fish Audio's
+`s2.1-pro-free` returns raw MP3 bytes, not the WAV container Piper/Gemini's
+TTS both produced — `app/schemas/voice.py`'s default and the widget's
+handling both already treat this generically (the widget's
+`decodeAudioToUrl` builds its `Blob` from whatever mime the backend sends),
+so nothing else needed to change.
 
-**Decoding is format-agnostic, same reasoning as before, different library.**
-`av` (PyAV, bundled ffmpeg) decodes whatever the browser recorded (WebM/Opus
-or MP4/AAC) and resamples it to the raw 16-bit PCM the Live API's realtime
-input expects — `faster-whisper` decoded the same formats directly, so this
-swap didn't change what the widget can send, only how the backend reads it.
+**Live verification, against the real APIs, not assumed from docs.**
+Before writing the implementation: found that Gemini's TTS-preview model
+this pipeline replaces had a real problem — a 3 req/min free-tier ceiling,
+confirmed by actually hitting a 429 while verifying the previous version —
+which motivated moving TTS off Gemini entirely rather than just tuning
+around it. Confirmed Fish Audio's zero-balance + free-model-header behavior
+by hand (a paid-voice call 402s, the free model doesn't, credit balance is
+provably unchanged after). Then a real signed-up tenant's voice-enabled
+agent was sent a real recording of "Do you offer international shipping?"
+through the actual running `/voice-messages` endpoint — transcribed
+correctly, answered by the same RAG-grounded pipeline as typed messages via
+`llama-3.1-8b-instant`, and spoken back through Fish Audio — end to end,
+against the live server. Total round trip: **~9.7 seconds**, against the
+Gemini Live pipeline's ~45 seconds for the equivalent real test — Groq's
+inference speed is the difference, not a smaller model doing less work.
+
+**Update: the widget's mic is now a separate button, not a way into the
+chat panel.** The mic previously lived inside the chat composer, so opening
+it also opened the full chat window — on request, voice is now its own
+floating launcher (`widget/src/components/VoiceLauncher.tsx`) that records,
+shows a listening/processing state, and plays the reply without ever
+opening the panel. It manages its own `VoiceRecorder` instance rather than
+reusing `MicButton`'s (which still exists, unchanged, for the in-panel mic
+next to the text composer) — the two are independent entry points to the
+same `sendVoiceMessage` path, not one triggering the other. A mic-permission
+error has nowhere to render on a closed panel, so `App.tsx` opens the panel
+specifically for that failure case; a successful turn never does. Separately,
+`useChat.sendVoiceMessage` now appends optimistic placeholder bubbles (a
+🎤 stand-in and a streaming-dots assistant bubble) the moment recording
+ends, patched in place once the real transcript/reply arrive — the
+in-panel mic flow no longer looks frozen for however long STT+LLM+TTS take.
 
 **The voice endpoint reuses the text pipeline's guts, not a parallel one.**
-`chat_service.stream_turn` (SSE, for typed messages) and the new
-`chat_service.complete_turn` (a plain JSON response, for voice — TTS needs
-the full reply text before it can run, so there's nothing to stream) both
-delegate the identical quota-check → persist-user-message → retrieval →
-build-Gemini-contents sequence to a shared `_prepare_turn` helper. Only the
-Gemini call itself and how the result is returned differ. A spoken turn gets
-the exact same RAG augmentation, quota accounting, and conversation history
-handling as a typed one, for free.
+`chat_service.stream_turn` (SSE, for typed messages, still Gemini) and
+`chat_service.complete_turn` (a plain JSON response, for voice, now Groq)
+both delegate the identical quota-check → persist-user-message → retrieval
+→ build-message-history sequence to the shared `_prepare_turn` helper. Only
+the LLM call itself, which provider it targets, and how the result is
+returned differ. A spoken turn gets the exact same RAG augmentation, quota
+accounting, and conversation history handling as a typed one, for free.
 
 **A Step 6 CORS gap, fixed here.** While wiring up the new
 `/conversations/{id}/voice-messages` route, it turned out **none** of
@@ -602,29 +711,23 @@ what was previously `sendMessage`-only code) as typed messages.
 `voice_enabled=false` rejection, oversized uploads, empty transcripts,
 transcription/LLM/TTS failures, quota exhaustion, missing/wrong session or
 origin, and the preflight route — `voice.transcribe_audio`/
-`voice.synthesize_speech` faked directly at the function boundary (not the
-lower-level Gemini client), matching `test_chat.py`'s `install_fake_client`
-seam pattern; no real network call needed to run these. A dedicated
-`test_voice_models.py` (1 test, mirroring `test_embeddings.py`'s role for
-the RAG embedding model) runs the *real* Gemini STT/TTS round trip with no
-mocking at all — skipped automatically if no `GEMINI_API_KEY` is configured,
-since unlike the old local-model version this one genuinely needs network
-access. Widget: unchanged by this swap — it only ever dealt with recording
-and playing back audio, never which provider transcribed or synthesized it.
+`voice.synthesize_speech` faked directly at the function boundary, and
+`chat_service.complete_turn`'s Groq call faked via a new
+`install_fake_groq_client` (mirroring `test_chat.py`'s
+`install_fake_client` for Gemini, but shaped like Groq/OpenAI's response —
+`choices[0].message.content`, `usage.prompt_tokens`/`completion_tokens` —
+not Gemini's); no real network call needed to run these. A dedicated
+`test_voice_models.py` (1 test) runs the *real* Groq STT + Fish Audio TTS
+round trip with no mocking — skipped automatically unless both
+`GROQ_API_KEY` and `FISH_AUDIO_API_KEY` are configured. Widget: unaffected
+by the backend provider swap (it only ever dealt with recording and playing
+back audio); the separate-launcher/placeholder-bubble changes above have
+their own updated test coverage in `useChat.test.ts`.
 
-**Live verification, against the real API, not assumed from docs.** Before
-writing the implementation: confirmed `gemini-3.1-flash-live-preview` and
-`gemini-3.1-flash-tts-preview` actually exist and are reachable on this
-project's key (a naive `models.list()` call missed them the first time —
-the API paginates past 50 models, and both sit on page 2); confirmed no
-billing-required error occurs on either; found and fixed the automatic-VAD
-hang described above; and ran a real synthesize → transcribe round trip
-(`test_voice_models.py`) that recovered the original text exactly. Separately,
-a real signed-up tenant's voice-enabled agent was sent a real recording of
-"What are your refund and return policies?" through the actual running
-`/voice-messages` endpoint — transcribed correctly, answered by the same
-RAG-grounded pipeline as typed messages, and spoken back — end to end,
-against the live server, not a mock.
+**Live verification, against the real APIs, not assumed from docs.**
+Covered above (the Fish Audio 402-vs-free-model check, the
+`whisper-large-v3-turbo` STT test, and the real end-to-end
+"Do you offer international shipping?" round trip) — not repeated twice.
 
 ## Dashboard (Step 8)
 
