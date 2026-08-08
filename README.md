@@ -1172,6 +1172,89 @@ detection (the abuse-defense territory an earlier README note flagged as
 (e.g. via certbot) are a deployment-specific follow-up. A CI pipeline was
 originally out of scope here too — added afterward, see below.
 
+**Update: a free, always-on cloud deployment path (Render), for when
+"runs on my laptop while Docker is open" stops being enough.** Everything
+above is docker-compose — genuinely useful for local development and
+demos, but only reachable while this machine is on. `render.yaml` at the
+repo root is a Render Blueprint that stands up the same stack (Postgres,
+Redis, backend, dashboard) on Render's free tier: no credit card to sign
+up, a real HTTPS URL on day one (`https://your-service.onrender.com`), no
+domain purchase required.
+
+**Unlike everything else in this README, this specific piece is not
+live-verified — said plainly, not glossed over.** Every other integration
+in this project (Gemini, Groq, Fish Audio, Firecrawl, Dodo's SDK, the
+containerized stack itself) was actually exercised against the real thing
+before being trusted. Standing up a real Render deployment needs a Render
+account this environment has no access to, so `render.yaml` is written
+correctly per Render's documented Blueprint spec, not confirmed by
+actually deploying it. The file itself flags the two spots most likely to
+need a manual fix on a real first deploy: the exact Blueprint `type` for a
+managed Redis-compatible store (Render's product naming for this has
+shifted over time), and whether `NEXT_PUBLIC_API_BASE_URL` — a Next.js
+build ARG, not a runtime env var, see `dashboard/Dockerfile`'s own comment
+on why — actually gets threaded through as a Docker build arg for a
+Blueprint-defined service the way an ordinary `envVars` entry does.
+
+**No nginx on Render — each service gets its own HTTPS origin directly.**
+Render terminates TLS and assigns a URL per web service; there's no single
+reverse-proxied origin to unify the backend and dashboard the way
+`docker-compose.yml`'s nginx does locally, so they end up on two different
+origins instead of one. Concretely: `PUBLIC_BASE_URL`/`WIDGET_CDN_URL`
+point at the backend's own Render URL, `DASHBOARD_BASE_URL`/
+`DASHBOARD_CORS_ORIGINS` point at the dashboard's, and the dashboard's
+`NEXT_PUBLIC_API_BASE_URL` build arg points back at the backend — all
+literal strings based on the Blueprint's chosen service names, since
+Render service URLs are deterministic (`https://{name}.onrender.com`)
+rather than something to resolve dynamically at deploy time.
+
+**The backend now serves its own `/widget.js`, which only matters because
+nginx is gone.** `app/api/widget_static.py` is a new, small route serving
+whatever `widget.js` got baked into the image at build time, with the same
+`Cache-Control: public, max-age=300` nginx's own `location = /widget.js`
+already used. Purely additive for the docker-compose path — nginx's own
+copy still intercepts that request first there, so this route 404s
+harmlessly and unused, confirmed by `curl`ing it directly against the
+backend container's own port (bypassing nginx entirely) and getting the
+real bundle back with the right headers, separately from confirming nginx
+itself was untouched.
+
+**Getting there needed the backend's build context to widen to the whole
+repo — the exact reasoning nginx's Dockerfile already had.** `backend/Dockerfile`
+previously only built from `backend/`, so it had no way to reach
+`widget/` to build it into the image. `docker-compose.yml`'s backend
+service now builds from the repo root (`context: ., dockerfile:
+backend/Dockerfile`), matching nginx's own build already did, with a new
+`widget-build` stage identical in spirit to nginx's. One real consequence,
+handled rather than overlooked: `backend/.dockerignore` was written for
+the old `context: ./backend` and silently stopped applying the moment the
+context widened — Docker only reads the `.dockerignore` at the root of
+whatever context is actually in use. Its protections (excluding
+`backend/.env`/`backend/.env.*` — real secrets — and cache/venv
+directories from ever reaching the build context) were folded into the
+root `.dockerignore`, and the now-dead file was deleted rather than left
+behind to bit-rot into a false sense of safety.
+
+**`$PORT`, not a hardcoded 8000, because Render assigns the port a Docker
+service must bind to.** `docker-compose.yml` never sets `PORT`, so
+`${PORT:-8000}` in the backend's `CMD` falls back to exactly the value
+every other local reference (nginx's `proxy_pass`, the healthcheck, `EXPOSE`)
+already assumed — unchanged behavior locally. The dashboard's own
+`server.js` (Next's standalone output) already reads `process.env.PORT`
+without any change needed.
+
+**What you have to do that no file can do for you:** create the free
+Render account, connect it to this GitHub repo via "New -> Blueprint", and
+— since Render deliberately never stores real secrets in a file that
+lives in your repo — paste in `GEMINI_API_KEY`/`GROQ_API_KEY`/
+`FISH_AUDIO_API_KEY`/`FIRECRAWL_API_KEY` yourself once the services exist,
+same values as your local `backend/.env`. Free Postgres on Render has an
+expiry window (has been quoted anywhere from 30 to 90 days depending on
+when you're reading this — check Render's current pricing page before
+relying on it past initial testing), and free web services spin down
+after roughly 15 minutes of no traffic, waking back up with a delay on the
+next request — the real cost of $0/month, not a bug in this config.
+
 ## CI
 
 `.github/workflows/ci.yml` — three independent jobs (`backend`, `dashboard`,

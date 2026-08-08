@@ -1,0 +1,136 @@
+# Render Blueprint — a free, always-on(-ish) cloud deployment, as an
+# alternative to the local-only docker-compose.yml stack.
+#
+# UNLIKE EVERYTHING ELSE IN THIS REPO, THIS FILE IS NOT LIVE-VERIFIED. Every
+# other piece of infrastructure here (docker-compose, the CI workflow, the
+# Gemini/Groq/Fish Audio/Firecrawl integrations) was actually run and
+# checked against real behavior before being trusted — that was not
+# possible here, since standing this up needs a Render account this
+# environment doesn't have access to. Read it as "believed correct from the
+# documented Blueprint spec," not "confirmed." The two spots most likely to
+# need a manual fix on first deploy are called out inline below.
+#
+# What's deliberately different from docker-compose.yml: there is no nginx
+# here. Render gives each web service its own HTTPS URL directly, so the
+# backend and dashboard end up on two different origins instead of one
+# unified by a reverse proxy — the backend now serves /widget.js itself
+# (see app/api/widget_static.py) precisely because there's no nginx left to
+# do it.
+#
+# Setup (one-time, in the Render dashboard):
+#   1. New -> Blueprint -> connect this GitHub repo. Render reads this file
+#      and creates every service below.
+#   2. Free Postgres has an expiry window (historically 30-90 days
+#      depending on when you're reading this — check Render's current
+#      pricing page). Fine for testing with a handful of free users; revisit
+#      before relying on this for anything real.
+#   3. Free web services spin down after ~15 minutes with no traffic and
+#      take a beat to wake back up on the next request — the tradeoff of
+#      $0/month here, not a bug in this config.
+#   4. Set the `sync: false` secrets below in the dashboard yourself (Render
+#      deliberately never stores real secrets in a file that lives in your
+#      repo) — same values as your local backend/.env.
+#   5. If either onrender.com hostname below collides with someone else's
+#      existing service (they're globally unique), Render will give you a
+#      different one — update PUBLIC_BASE_URL/WIDGET_CDN_URL/
+#      DASHBOARD_BASE_URL/DASHBOARD_CORS_ORIGINS and the dashboard's build
+#      arg to match, then redeploy both services.
+
+databases:
+  - name: voiceagent-db
+    databaseName: voiceagent
+    user: voiceagent
+    plan: free
+
+services:
+  # Not yet confirmed which Blueprint `type` Render currently expects for a
+  # managed Redis-compatible store — "redis" is what the spec has
+  # documented historically; Render has also offered this under a "Key
+  # Value" product name at times. If the blueprint apply step rejects this
+  # service, create it manually from Render's dashboard instead (New ->
+  # Redis/Key Value, free plan) and paste its connection string into the
+  # backend's REDIS_URL env var yourself.
+  - type: redis
+    name: voiceagent-redis
+    plan: free
+    ipAllowList: [] # no external access needed — only voiceagent-backend reads this
+
+  - type: web
+    name: voiceagent-backend
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: voiceagent-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: voiceagent-redis
+          property: connectionString
+      # Render URLs are deterministic from the service `name` above
+      # (https://{name}.onrender.com) — see setup step 5 if either name was
+      # already taken and Render assigned something else instead.
+      - key: PUBLIC_BASE_URL
+        value: https://voiceagent-backend.onrender.com
+      - key: WIDGET_CDN_URL
+        value: https://voiceagent-backend.onrender.com/widget.js
+      - key: DASHBOARD_BASE_URL
+        value: https://voiceagent-dashboard.onrender.com
+      - key: DASHBOARD_CORS_ORIGINS
+        value: https://voiceagent-dashboard.onrender.com
+      # Voice + RAG + crawling — same free-tier keys as your local
+      # backend/.env. Leave any of these blank to run without that feature,
+      # same as locally.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: FISH_AUDIO_API_KEY
+        sync: false
+      - key: FIRECRAWL_API_KEY
+        sync: false
+      # Billing (Step 9) is explicitly paused for this platform right now —
+      # leave these blank; the billing routes just won't be reachable
+      # without them, same as an unconfigured Dodo account locally.
+      - key: DODO_API_KEY
+        sync: false
+      - key: DODO_WEBHOOK_KEY
+        sync: false
+      - key: DODO_PRODUCT_ID_STARTER
+        sync: false
+      - key: DODO_PRODUCT_ID_PRO
+        sync: false
+      - key: DODO_PRODUCT_ID_ENTERPRISE
+        sync: false
+
+  - type: web
+    name: voiceagent-dashboard
+    runtime: docker
+    dockerfilePath: dashboard/Dockerfile
+    dockerContext: dashboard
+    plan: free
+    envVars:
+      # NEXT_PUBLIC_API_BASE_URL is a build ARG (baked into the client
+      # bundle at build time — see dashboard/Dockerfile's own comment on
+      # why this can't be a runtime env var), not an ordinary env var. Render
+      # blueprints are documented to pass envVars through as Docker build
+      # args for `runtime: docker` services, but that specific behavior is
+      # the least-verified part of this whole file (see the top-of-file
+      # note). If the dashboard deploys but calls the wrong backend URL,
+      # set this in the dashboard's Environment tab and trigger a manual
+      # redeploy — the fallback path, not a sign the whole approach is wrong.
+      - key: NEXT_PUBLIC_API_BASE_URL
+        value: https://voiceagent-backend.onrender.com/api/v1

@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 from app import __version__
 from app.api.router import api_router
+from app.api.widget_static import router as widget_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
@@ -50,6 +51,7 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(api_router, prefix=settings.api_v1_prefix)
+    app.include_router(widget_router)
     return app
 
 

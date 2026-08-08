@@ -1,12 +1,17 @@
-# Only nginx's build (context: .) reads this — backend/ and dashboard/ have
-# their own .dockerignore for their own (smaller) build contexts. Without
-# this, the whole repo — including backend/.venv and every node_modules —
-# would be sent to the Docker daemon just to build an image that only ever
-# copies widget/ out of it.
+# Read by every build using the repo root as its context — nginx's (always
+# has) and backend's (now also builds the widget, see backend/Dockerfile).
+# dashboard/ still has its own .dockerignore for its own, smaller context.
+# Without this, the whole repo — including backend/.venv and every
+# node_modules — would be sent to the Docker daemon on every build.
 .git/
 backend/.venv/
 backend/__pycache__/
 backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/.env
+backend/.env.*
+!backend/.env.example
 widget/node_modules/
 widget/dist/
 dashboard/node_modules/
