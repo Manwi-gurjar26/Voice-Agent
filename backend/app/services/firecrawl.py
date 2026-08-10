@@ -61,11 +61,28 @@ def _build_http_client() -> httpx.AsyncClient:
 
 async def crawl_site(url: str, limit: int) -> list[CrawledPage]:
     """Starts a Firecrawl job for `url` (capped at `limit` pages) and polls
-    until it completes, returning one CrawledPage per discovered page."""
+    until it completes, returning one CrawledPage per discovered page.
+
+    `scrapeOptions.waitFor` gives each page's client-side JS time to render
+    before Firecrawl captures it — without it, a JS-rendered site (Streamlit,
+    a React/Vue SPA, etc.) yields only its loading shell, not real content.
+    `excludePaths` skips non-content system files a crawler would otherwise
+    discover and scrape as if they were pages.
+    """
     async with _build_http_client() as client:
         try:
             start = await client.post(
-                f"{_BASE_URL}/crawl", headers=_headers(), json={"url": url, "limit": limit}
+                f"{_BASE_URL}/crawl",
+                headers=_headers(),
+                json={
+                    "url": url,
+                    "limit": limit,
+                    "scrapeOptions": {
+                        "formats": ["markdown"],
+                        "waitFor": settings.crawl_wait_for_ms,
+                    },
+                    "excludePaths": ["/sitemap.xml", "/robots.txt"],
+                },
             )
             start.raise_for_status()
             job_id = start.json()["id"]
@@ -79,7 +96,14 @@ async def crawl_site(url: str, limit: int) -> list[CrawledPage]:
                 status_response.raise_for_status()
                 body = status_response.json()
             except Exception as exc:
-                raise CrawlError(f"Could not check crawl status for {url}: {exc}") from exc
+                # A single flaky poll (confirmed live: Firecrawl's status
+                # endpoint occasionally 502s transiently) shouldn't fail the
+                # whole crawl — the job keeps running server-side regardless.
+                # Only the timeout below gives up for real.
+                if time.monotonic() > deadline:
+                    raise CrawlError(f"Could not check crawl status for {url}: {exc}") from exc
+                await asyncio.sleep(settings.crawl_poll_interval_seconds)
+                continue
 
             status = body.get("status")
             if status == "completed":
@@ -90,9 +114,23 @@ async def crawl_site(url: str, limit: int) -> list[CrawledPage]:
                         markdown=item.get("markdown") or "",
                     )
                     for item in body.get("data", [])
+                    # Belt-and-suspenders: excludePaths above doesn't
+                    # reliably keep Firecrawl from auto-discovering and
+                    # scraping a site's own sitemap.xml/robots.txt as if it
+                    # were a content page (confirmed live) — those are never
+                    # useful chunks for a knowledge base.
+                    if not _is_non_content_path((item.get("metadata") or {}).get("url") or "")
                 ]
             if status in ("failed", "cancelled"):
                 raise CrawlError(f"Firecrawl could not crawl {url} (status: {status}).")
             if time.monotonic() > deadline:
                 raise CrawlError(f"Timed out waiting for {url} to finish crawling.")
             await asyncio.sleep(settings.crawl_poll_interval_seconds)
+
+
+_NON_CONTENT_SUFFIXES = ("/sitemap.xml", "/robots.txt")
+
+
+def _is_non_content_path(page_url: str) -> bool:
+    path = httpx.URL(page_url).path if page_url else ""
+    return path.endswith(_NON_CONTENT_SUFFIXES)

@@ -28,6 +28,20 @@ logger = logging.getLogger(__name__)
 # instead of Gemini/Gemini Live.
 GROQ_VOICE_MODEL = "llama-3.1-8b-instant"
 
+# Fish Audio's free TTS tier synthesizes at roughly ~20ms/char (confirmed
+# live: 58 chars ~1.7s, 534 chars ~10.5s) — a reply sized for on-screen
+# reading (agent.max_output_tokens, up to 2048 by default) can take a
+# minute or more to speak, which reads as "the voice assistant is broken"
+# long before it actually replies. Voice replies are capped far shorter
+# and steered toward spoken-style brevity, independent of the agent's
+# text-chat length setting.
+_VOICE_MAX_TOKENS = 120
+_VOICE_BREVITY_INSTRUCTION = (
+    "\n\nThis reply will be converted to speech and read aloud, so keep it "
+    "brief and conversational — at most 2-3 short sentences, no lists, "
+    "tables, or markdown formatting."
+)
+
 # Defensive cap on how much history we load and resend to the model per turn
 # — not a product-facing pagination limit. A conversation this long is
 # already unusual; this exists so one doesn't grow the request payload
@@ -334,8 +348,8 @@ async def complete_turn(
         client = groq_llm.get_groq_client()
         response = await client.chat.completions.create(
             model=GROQ_VOICE_MODEL,
-            messages=_build_groq_messages(system_prompt, history),
-            max_tokens=agent.max_output_tokens,
+            messages=_build_groq_messages(system_prompt + _VOICE_BREVITY_INSTRUCTION, history),
+            max_tokens=min(agent.max_output_tokens, _VOICE_MAX_TOKENS),
         )
     except Exception as exc:
         logger.exception("Groq call failed for conversation %s", conversation.id)

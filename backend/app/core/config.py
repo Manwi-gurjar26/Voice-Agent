@@ -109,8 +109,14 @@ class Settings(BaseSettings):
     # credit pool shared by every crawl any tenant runs.
     firecrawl_api_key: str | None = None
     max_crawl_pages: int = 20
-    crawl_poll_timeout_seconds: float = 120.0
+    crawl_poll_timeout_seconds: float = 180.0
     crawl_poll_interval_seconds: float = 3.0
+    # JS-rendered sites (Streamlit, React/Vue SPAs, etc.) return an empty
+    # loading shell if scraped immediately — confirmed live against a real
+    # Streamlit Community Cloud app, which returned only the host's generic
+    # "app is loading" placeholder with no waitFor, and the actual page
+    # content once given 15s to hydrate over its WebSocket connection.
+    crawl_wait_for_ms: int = 15000
 
     # --- Voice (Step 7) ---
     # Turn-based pipeline: Groq (STT via whisper-large-v3-turbo, and the

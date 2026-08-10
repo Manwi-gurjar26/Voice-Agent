@@ -57,14 +57,17 @@ async def synthesize_speech(text: str, voice: str | None) -> bytes:
     Audio `reference_id` (a voice clone/preset from that account's library);
     the account's default voice is used otherwise.
 
-    `text` is truncated defensively — a reply this long would already be
-    unusual given Agent.max_output_tokens.
+    `text` is truncated defensively to roughly what chat_service's voice
+    path already asks the model to stay within (a few short spoken
+    sentences) — confirmed live that this free tier synthesizes at
+    ~20ms/char, so an untruncated text-chat-length reply (thousands of
+    chars) can take a minute or more to speak.
     """
-    payload: dict = {"text": text[:4096]}
+    payload: dict = {"text": text[:600]}
     if voice:
         payload["reference_id"] = voice
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=45.0) as client:
             response = await client.post(
                 _TTS_URL,
                 headers={
