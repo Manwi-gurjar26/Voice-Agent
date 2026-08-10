@@ -9,7 +9,7 @@ import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,12 +67,24 @@ async def signup(db: AsyncSession, payload: SignupRequest) -> tuple[User, Tenant
     if existing:
         raise ConflictError("An account with this email already exists.")
 
+    company_name = payload.company_name.strip()
+    existing_tenant = await db.scalar(
+        select(Tenant.id).where(func.lower(Tenant.name) == company_name.lower()).limit(1)
+    )
+    if existing_tenant:
+        raise ConflictError("A workspace with this name already exists.")
+
     tenant = Tenant(
-        name=payload.company_name.strip(),
+        name=company_name,
         slug=await _unique_slug(db, slugify(payload.company_name)),
     )
     db.add(tenant)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        # Two concurrent signups for the same workspace name; the unique index wins.
+        await db.rollback()
+        raise ConflictError("A workspace with this name already exists.") from exc
 
     user = User(
         tenant_id=tenant.id,

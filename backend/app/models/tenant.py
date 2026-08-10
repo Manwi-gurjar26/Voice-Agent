@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, String, UniqueConstraint, func, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, Integer, String, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDMixin
@@ -77,3 +77,11 @@ class Tenant(Base, UUIDMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<Tenant {self.slug!r}>"
+
+
+# A unique index on lower(name) rather than a plain UniqueConstraint on name:
+# workspace display names must stay case-preserving (a business's real
+# casing shouldn't be mangled to lowercase in storage, unlike email), but
+# two tenants signing up with "Acme Inc" and "ACME INC" are still the same
+# collision from a user's point of view.
+Index("uq_tenants_name_lower", func.lower(Tenant.name), unique=True)

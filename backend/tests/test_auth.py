@@ -62,9 +62,29 @@ async def test_duplicate_email_is_rejected(client):
     assert response.json()["error"]["code"] == "conflict"
 
 
-async def test_duplicate_company_name_gets_a_distinct_slug(client):
-    first = await register(client, email="a@acme.example.com")
-    second = await register(client, email="b@acme.example.com")
+async def test_duplicate_company_name_is_rejected(client):
+    await register(client, email="a@acme.example.com")
+    response = await client.post(
+        f"{PREFIX}/auth/signup", json=signup_body(email="b@acme.example.com")
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "conflict"
+    assert "workspace" in response.json()["error"]["message"].lower()
+
+
+async def test_duplicate_company_name_is_rejected_case_insensitively(client):
+    await register(client, email="a@acme.example.com", company="Acme Inc")
+    response = await client.post(
+        f"{PREFIX}/auth/signup",
+        json=signup_body(email="b@acme.example.com", company="ACME INC"),
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "conflict"
+
+
+async def test_distinct_company_names_both_succeed(client):
+    first = await register(client, email="a@acme.example.com", company="Acme Inc")
+    second = await register(client, email="b@acme.example.com", company="Widgets LLC")
 
     slug_a = (await client.get(f"{PREFIX}/auth/me", headers=bearer(first))).json()["tenant"]["slug"]
     slug_b = (await client.get(f"{PREFIX}/auth/me", headers=bearer(second))).json()["tenant"]["slug"]
