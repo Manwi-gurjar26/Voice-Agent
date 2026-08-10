@@ -47,8 +47,14 @@ class Settings(BaseSettings):
     dashboard_cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # --- Public URLs (used to build the customer's embed snippet) ---
-    public_base_url: str = "http://localhost:8000"
-    widget_cdn_url: str = "http://localhost:5173/widget.js"
+    # 127.0.0.1, not localhost: confirmed live that on a machine with
+    # WSL2/Docker Desktop installed, "localhost" can resolve to ::1 first
+    # and get silently forwarded into WSL instead of reaching this backend
+    # (which only binds 127.0.0.1) — the embedded widget's config fetch
+    # failed with a CORS/network error and never rendered at all, with no
+    # error visible on the customer's page besides a browser console log.
+    public_base_url: str = "http://127.0.0.1:8000"
+    widget_cdn_url: str = "http://127.0.0.1:5173/widget.js"
 
     # --- Auth policy ---
     min_password_length: int = 12
