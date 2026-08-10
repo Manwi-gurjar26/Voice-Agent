@@ -10,6 +10,35 @@ const CANDIDATE_MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4
 // cost per turn, independent of whether the visitor remembers to stop.
 const MAX_RECORDING_MS = 120_000;
 
+// --- Silence detection (opt-in via VoiceRecorderOptions.autoStopOnSilence) ---
+// How often the mic level is sampled. Counted in ticks rather than wall-clock
+// timestamps so the behaviour is deterministic under fake timers.
+const SILENCE_POLL_MS = 100;
+// RMS amplitude (0..1) at or above which the visitor is considered to be
+// speaking. Room tone and mic self-noise sit well under this; normal speech
+// sits well over it.
+const DEFAULT_SILENCE_THRESHOLD = 0.015;
+// How long the visitor must stay quiet *after having spoken* before the turn
+// is considered finished. Long enough to survive the natural pauses between
+// words and sentences, short enough not to feel laggy.
+const DEFAULT_SILENCE_DURATION_MS = 1_500;
+// Give up if the visitor never says anything at all, rather than holding the
+// mic open until MAX_RECORDING_MS. The resulting near-empty recording is
+// rejected by the backend with "Could not hear anything in that recording."
+const DEFAULT_NO_SPEECH_TIMEOUT_MS = 8_000;
+
+export interface VoiceRecorderOptions {
+  /** Finish the recording automatically once the visitor stops speaking,
+   * instead of waiting for a second stop() call. Used by the standalone
+   * voice launcher, where click-to-start/click-again-to-stop doesn't match
+   * how people expect a voice assistant to behave; the in-panel mic button
+   * deliberately keeps the explicit press-to-stop model. */
+  autoStopOnSilence?: boolean;
+  silenceThreshold?: number;
+  silenceDurationMs?: number;
+  noSpeechTimeoutMs?: number;
+}
+
 const MIME_TO_EXTENSION: Record<string, string> = {
   "audio/webm": "webm",
   "audio/mp4": "mp4",
@@ -41,8 +70,12 @@ export class VoiceRecorder {
   private recorder: MediaRecorder | null = null;
   private chunks: BlobPart[] = [];
   private autoStopTimer: ReturnType<typeof setTimeout> | null = null;
+  private silenceTimer: ReturnType<typeof setInterval> | null = null;
+  private audioContext: AudioContext | null = null;
   private mimeType = "";
   private cancelled = false;
+
+  constructor(private readonly options: VoiceRecorderOptions = {}) {}
 
   // Created once at start() and resolved by the single native "stop"
   // listener, regardless of what triggers it (a manual stop() call, the
@@ -100,6 +133,72 @@ export class VoiceRecorder {
     this.autoStopTimer = setTimeout(() => {
       if (this.recorder?.state === "recording") this.recorder.stop();
     }, MAX_RECORDING_MS);
+
+    if (this.options.autoStopOnSilence) this.startSilenceDetection(this.stream);
+  }
+
+  /** Watches the live mic level and ends the recording once the visitor has
+   * spoken and then gone quiet. Best-effort: a browser without the Web Audio
+   * API (or one that refuses to open an AudioContext) simply keeps the
+   * manual stop() path, rather than failing the recording outright. */
+  private startSilenceDetection(stream: MediaStream): void {
+    const AudioContextCtor =
+      typeof window === "undefined"
+        ? undefined
+        : window.AudioContext ??
+          (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (typeof AudioContextCtor !== "function") return;
+
+    let context: AudioContext;
+    let analyser: AnalyserNode;
+    try {
+      context = new AudioContextCtor();
+      analyser = context.createAnalyser();
+      analyser.fftSize = 2048;
+      context.createMediaStreamSource(stream).connect(analyser);
+    } catch {
+      return;
+    }
+    this.audioContext = context;
+    // Clicking the launcher is a user gesture, so this normally starts
+    // "running" — but resume() is harmless if it already is, and rescues the
+    // case where a browser hands back a suspended context anyway.
+    if (context.state === "suspended") void context.resume();
+
+    const threshold = this.options.silenceThreshold ?? DEFAULT_SILENCE_THRESHOLD;
+    const silenceTicks = Math.ceil(
+      (this.options.silenceDurationMs ?? DEFAULT_SILENCE_DURATION_MS) / SILENCE_POLL_MS,
+    );
+    const noSpeechTicks = Math.ceil(
+      (this.options.noSpeechTimeoutMs ?? DEFAULT_NO_SPEECH_TIMEOUT_MS) / SILENCE_POLL_MS,
+    );
+
+    const samples = new Uint8Array(analyser.fftSize);
+    let hasSpoken = false;
+    let quietTicks = 0;
+    let totalTicks = 0;
+
+    this.silenceTimer = setInterval(() => {
+      analyser.getByteTimeDomainData(samples);
+      let sumSquares = 0;
+      for (const sample of samples) {
+        // Byte time-domain data is centred on 128; normalise to -1..1.
+        const centred = (sample - 128) / 128;
+        sumSquares += centred * centred;
+      }
+      const rms = Math.sqrt(sumSquares / samples.length);
+      totalTicks += 1;
+
+      if (rms >= threshold) {
+        hasSpoken = true;
+        quietTicks = 0;
+        return;
+      }
+
+      quietTicks += 1;
+      const finished = hasSpoken ? quietTicks >= silenceTicks : totalTicks >= noSpeechTicks;
+      if (finished && this.recorder?.state === "recording") this.recorder.stop();
+    }, SILENCE_POLL_MS);
   }
 
   /** Stops recording and resolves with the captured audio (same promise as
@@ -131,6 +230,17 @@ export class VoiceRecorder {
     if (this.autoStopTimer !== null) {
       clearTimeout(this.autoStopTimer);
       this.autoStopTimer = null;
+    }
+    if (this.silenceTimer !== null) {
+      clearInterval(this.silenceTimer);
+      this.silenceTimer = null;
+    }
+    if (this.audioContext) {
+      // close() rejects if the context is already closed; nothing here can
+      // act on that, and letting it reject unhandled would surface as a
+      // console error on an otherwise successful recording.
+      void this.audioContext.close().catch(() => {});
+      this.audioContext = null;
     }
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;

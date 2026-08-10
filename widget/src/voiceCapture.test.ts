@@ -41,6 +41,34 @@ function fakeTrack() {
   return { stop: vi.fn() };
 }
 
+/** Drives silence detection: `level` is the RMS the analyser should report,
+ * settable per-tick so a test can script "speech, then silence". */
+function fakeAudioContext() {
+  const state = { level: 0, closed: false };
+  class FakeAudioContext {
+    state: AudioContextState = "running";
+    close = vi.fn(() => {
+      state.closed = true;
+      return Promise.resolve();
+    });
+    resume = vi.fn(() => Promise.resolve());
+    createMediaStreamSource() {
+      return { connect: vi.fn() };
+    }
+    createAnalyser() {
+      return {
+        fftSize: 2048,
+        getByteTimeDomainData: (array: Uint8Array) => {
+          // A constant offset from the 128 centre yields exactly that RMS.
+          array.fill(128 + Math.round(state.level * 128));
+        },
+      };
+    }
+  }
+  vi.stubGlobal("AudioContext", FakeAudioContext);
+  return state;
+}
+
 function fakeStream() {
   const tracks = [fakeTrack(), fakeTrack()];
   return { getTracks: () => tracks, __tracks: tracks } as unknown as MediaStream & {
@@ -177,6 +205,104 @@ describe("voiceCapture", () => {
 
       const blob = await recorder.stop();
       expect(blob).toBeInstanceOf(Blob);
+    });
+  });
+
+  describe("VoiceRecorder auto-stop on silence", () => {
+    it("finishes the turn once the speaker goes quiet", async () => {
+      vi.useFakeTimers();
+      const audio = fakeAudioContext();
+      const recorder = new VoiceRecorder({ autoStopOnSilence: true });
+      await recorder.start();
+
+      let done = false;
+      void recorder.completion?.then(() => {
+        done = true;
+      });
+
+      audio.level = 0.2; // speaking
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(done).toBe(false);
+
+      audio.level = 0; // stopped speaking
+      await vi.advanceTimersByTimeAsync(1_000); // under the 1.5s silence window
+      expect(done).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(600);
+      expect(done).toBe(true);
+    });
+
+    it("keeps listening through short pauses between words", async () => {
+      vi.useFakeTimers();
+      const audio = fakeAudioContext();
+      const recorder = new VoiceRecorder({ autoStopOnSilence: true });
+      await recorder.start();
+
+      let done = false;
+      void recorder.completion?.then(() => {
+        done = true;
+      });
+
+      for (let i = 0; i < 5; i += 1) {
+        audio.level = 0.2;
+        await vi.advanceTimersByTimeAsync(400);
+        audio.level = 0; // a beat between words, well under the silence window
+        await vi.advanceTimersByTimeAsync(800);
+      }
+      expect(done).toBe(false);
+    });
+
+    it("gives up if the visitor never says anything", async () => {
+      vi.useFakeTimers();
+      fakeAudioContext(); // stays at level 0 throughout
+      const recorder = new VoiceRecorder({ autoStopOnSilence: true });
+      await recorder.start();
+
+      let done = false;
+      void recorder.completion?.then(() => {
+        done = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(7_000);
+      expect(done).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(done).toBe(true);
+    });
+
+    it("closes the audio context when the recording ends", async () => {
+      vi.useFakeTimers();
+      const audio = fakeAudioContext();
+      const recorder = new VoiceRecorder({ autoStopOnSilence: true });
+      await recorder.start();
+
+      await recorder.stop();
+      expect(audio.closed).toBe(true);
+    });
+
+    it("still records normally when the Web Audio API is unavailable", async () => {
+      vi.stubGlobal("AudioContext", undefined);
+      const recorder = new VoiceRecorder({ autoStopOnSilence: true });
+      await recorder.start();
+
+      const blob = await recorder.stop();
+      expect(blob).toBeInstanceOf(Blob);
+    });
+
+    it("does not watch the mic level unless asked to", async () => {
+      vi.useFakeTimers();
+      const audio = fakeAudioContext();
+      const recorder = new VoiceRecorder(); // no autoStopOnSilence
+      await recorder.start();
+
+      let done = false;
+      void recorder.completion?.then(() => {
+        done = true;
+      });
+
+      audio.level = 0; // silent the whole time
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(done).toBe(false); // only the 120s hard cap applies
     });
   });
 });

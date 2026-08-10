@@ -17,7 +17,13 @@ interface VoiceLauncherProps {
  * visible entry point — deliberately does NOT open the chat panel; it
  * records and plays the spoken reply entirely on its own (see App.tsx's
  * audioRef), matching the request that clicking the mic never pops the
- * chatbot window open. */
+ * chatbot window open.
+ *
+ * One click starts listening and the turn ends on its own once the visitor
+ * stops talking (autoStopOnSilence) — how a voice assistant is expected to
+ * behave. Clicking again still cuts the turn short immediately, so there's
+ * always a manual way out (and a keyboard-reachable one). The in-panel
+ * MicButton keeps the explicit press-to-stop model on purpose. */
 export function VoiceLauncher({ position, agentName, disabled, onRecordingComplete, onError }: VoiceLauncherProps) {
   const [recording, setRecording] = useState(false);
   const recorderRef = useRef<VoiceRecorder | null>(null);
@@ -38,7 +44,7 @@ export function VoiceLauncher({ position, agentName, disabled, onRecordingComple
       return;
     }
 
-    const recorder = new VoiceRecorder();
+    const recorder = new VoiceRecorder({ autoStopOnSilence: true });
     try {
       await recorder.start();
     } catch (err) {
@@ -56,7 +62,11 @@ export function VoiceLauncher({ position, agentName, disabled, onRecordingComple
   }
 
   const processing = disabled && !recording;
-  const label = recording ? "Stop recording" : processing ? "Processing…" : `Talk to ${agentName}`;
+  const label = recording
+    ? "Listening — sends automatically when you stop speaking"
+    : processing
+      ? "Processing…"
+      : `Talk to ${agentName}`;
 
   return (
     <button
