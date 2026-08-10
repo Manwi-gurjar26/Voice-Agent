@@ -16,6 +16,23 @@ function resolvePosition(rawPosition: string | undefined): "left" | "right" {
   return rawPosition === "bottom-left" ? "left" : "right";
 }
 
+/** Resolves when the reply has finished being spoken — that's the cue for
+ * VoiceLauncher's hands-free loop to reopen the mic, so it must also resolve
+ * (rather than hang) when playback fails or is blocked by an autoplay
+ * policy, otherwise the conversation would stall with the mic shut. */
+function playToEnd(element: HTMLAudioElement): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      element.removeEventListener("ended", finish);
+      element.removeEventListener("error", finish);
+      resolve();
+    };
+    element.addEventListener("ended", finish);
+    element.addEventListener("error", finish);
+    element.play().catch(finish);
+  });
+}
+
 export function App({ baseUrl, publicKey }: AppProps) {
   // Created once per mount, not per render — a fresh client every render
   // would be harmless functionally (it's stateless) but wasteful.
@@ -57,6 +74,8 @@ export function App({ baseUrl, publicKey }: AppProps) {
     setOpen(true);
   }
 
+  // Awaited by VoiceLauncher: it only reopens the mic once this resolves, so
+  // the agent is never recording itself while it speaks.
   async function handleVoiceMessage(audio: Blob, filename: string) {
     setVoiceError(null);
     const result = await chat.sendVoiceMessage(audio, filename);
@@ -64,10 +83,15 @@ export function App({ baseUrl, publicKey }: AppProps) {
 
     if (previousAudioUrlRef.current) URL.revokeObjectURL(previousAudioUrlRef.current);
     previousAudioUrlRef.current = result.audioUrl;
-    if (audioRef.current) {
-      audioRef.current.src = result.audioUrl;
-      void audioRef.current.play();
-    }
+    if (!audioRef.current) return;
+    audioRef.current.src = result.audioUrl;
+    await playToEnd(audioRef.current);
+  }
+
+  /** Ending a conversation should also cut the agent off mid-sentence —
+   * waiting out a reply you've already dismissed feels broken. */
+  function stopSpeaking() {
+    audioRef.current?.pause();
   }
 
   return (
@@ -91,8 +115,9 @@ export function App({ baseUrl, publicKey }: AppProps) {
         <VoiceLauncher
           position={position}
           agentName={name}
-          disabled={chat.isSending}
+          thinking={chat.isSending}
           onRecordingComplete={handleVoiceMessage}
+          onConversationEnd={stopSpeaking}
           onError={handleVoiceLauncherError}
         />
       )}

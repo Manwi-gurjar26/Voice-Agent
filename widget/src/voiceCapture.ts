@@ -74,6 +74,8 @@ export class VoiceRecorder {
   private audioContext: AudioContext | null = null;
   private mimeType = "";
   private cancelled = false;
+  private watchingLevel = false;
+  private heardSpeech = false;
 
   constructor(private readonly options: VoiceRecorderOptions = {}) {}
 
@@ -96,6 +98,17 @@ export class VoiceRecorder {
     return this.stopPromise;
   }
 
+  /** Whether anyone actually spoke during this recording. Lets a caller skip
+   * uploading a recording that's certainly just room tone (see
+   * VoiceLauncher's hands-free loop, which keeps listening instead).
+   *
+   * True when the mic level was never watched at all — without silence
+   * detection there's no evidence either way, and treating "unknown" as
+   * silence would drop perfectly good recordings. */
+  get speechDetected(): boolean {
+    return !this.watchingLevel || this.heardSpeech;
+  }
+
   async start(): Promise<void> {
     if (!isVoiceCaptureSupported()) {
       throw new Error("Voice recording is not supported in this browser.");
@@ -107,6 +120,8 @@ export class VoiceRecorder {
     this.mimeType = mimeType;
     this.filename = `recording.${extensionFor(mimeType)}`;
     this.cancelled = false;
+    this.watchingLevel = false;
+    this.heardSpeech = false;
 
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     this.chunks = [];
@@ -160,6 +175,7 @@ export class VoiceRecorder {
       return;
     }
     this.audioContext = context;
+    this.watchingLevel = true;
     // Clicking the launcher is a user gesture, so this normally starts
     // "running" — but resume() is harmless if it already is, and rescues the
     // case where a browser hands back a suspended context anyway.
@@ -191,6 +207,7 @@ export class VoiceRecorder {
 
       if (rms >= threshold) {
         hasSpoken = true;
+        this.heardSpeech = true;
         quietTicks = 0;
         return;
       }

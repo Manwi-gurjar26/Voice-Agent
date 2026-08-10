@@ -110,6 +110,15 @@
   animation: va-mic-pulse 1.4s infinite ease-in-out;
 }
 
+/* Still in the conversation, just the agent's turn to talk — filled in the
+   brand colour rather than the recording red, so "it's listening to me" and
+   "it's answering me" are never confusable at a glance. */
+.va-voice-launcher.va-voice-busy {
+  background: var(--va-primary);
+  color: #fff;
+  border-color: var(--va-primary);
+}
+
 .va-spin {
   animation: va-spin-rotate 0.9s linear infinite;
 }
