@@ -17,14 +17,16 @@ from app.core.config import settings
 from app.core.errors import AuthenticationError, ConflictError
 from app.core.security import (
     create_token,
+    generate_password_reset_token,
     generate_refresh_token,
     hash_password,
     hash_secret_key,
     verify_password,
 )
-from app.models import RefreshToken, Tenant, User
+from app.models import PasswordResetToken, RefreshToken, Tenant, User
 from app.models.enums import UserRole
 from app.schemas.auth import SignupRequest, TokenPair
+from app.services.email import send_password_reset_email
 
 logger = logging.getLogger(__name__)
 
@@ -224,3 +226,53 @@ async def revoke_all_for_user(db: AsyncSession, user_id: uuid.UUID) -> int:
     )
     await db.flush()
     return result.rowcount or 0
+
+
+async def request_password_reset(db: AsyncSession, email: str) -> None:
+    """Always returns silently, whether or not the address exists — same
+    enumeration-protection reasoning as authenticate()'s identical error
+    message for "no such user" vs "wrong password"."""
+    user = await db.scalar(select(User).where(User.email == email))
+    if user is None or not user.is_active:
+        return
+
+    plaintext, token_hash = generate_password_reset_token()
+    db.add(
+        PasswordResetToken(
+            user_id=user.id,
+            token_hash=token_hash,
+            expires_at=_now() + timedelta(minutes=settings.password_reset_token_expire_minutes),
+        )
+    )
+    # Commit before sending: the token must exist even if the request that
+    # created it is still in flight when the email arrives (or, locally,
+    # before whoever's watching the log line can use it).
+    await db.commit()
+
+    reset_url = f"{settings.dashboard_base_url}/reset-password?token={plaintext}"
+    await send_password_reset_email(user.email, reset_url)
+
+
+async def reset_password(db: AsyncSession, raw_token: str, new_password: str) -> None:
+    """Redeems a password-reset token: sets the new password, consumes the
+    token, and revokes every existing session — a password reset is exactly
+    the "sign out everywhere" scenario revoke_all_for_user exists for."""
+    now = _now()
+    invalid = AuthenticationError(
+        "This password reset link is invalid or has expired.", code="invalid_reset_token"
+    )
+
+    record = await db.scalar(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == hash_secret_key(raw_token))
+    )
+    if record is None or not record.is_usable(now):
+        raise invalid
+
+    user = await db.scalar(select(User).where(User.id == record.user_id))
+    if user is None or not user.is_active:
+        raise invalid
+
+    user.hashed_password = hash_password(new_password)
+    record.used_at = now
+    await revoke_all_for_user(db, user.id)
+    await db.commit()

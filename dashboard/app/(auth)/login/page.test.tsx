@@ -47,6 +47,14 @@ describe("LoginPage", () => {
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/agents"));
   });
 
+  it("links to the forgot-password page", () => {
+    render(<LoginPage />);
+    expect(screen.getByRole("link", { name: /forgot password/i })).toHaveAttribute(
+      "href",
+      "/forgot-password",
+    );
+  });
+
   it("shows a toast error when login fails", async () => {
     login.mockRejectedValue(new Error("nope"));
     const user = userEvent.setup();

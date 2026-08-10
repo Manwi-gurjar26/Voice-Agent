@@ -126,6 +126,14 @@ def generate_agent_secret_key() -> tuple[str, str]:
     return plaintext, hash_secret_key(plaintext)
 
 
+def generate_password_reset_token() -> tuple[str, str]:
+    """Opaque password-reset token. Returns (plaintext, hash) — store only
+    the hash, same reasoning as generate_refresh_token: a database leak
+    alone must not yield a usable token."""
+    plaintext = secrets.token_urlsafe(48)
+    return plaintext, hash_secret_key(plaintext)
+
+
 def hash_secret_key(plaintext: str) -> str:
     """Fast keyed hash — API keys are high-entropy, so bcrypt's cost is wasted
     here and would add latency to every request."""

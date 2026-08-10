@@ -54,6 +54,23 @@ class RefreshRequest(BaseModel):
     refresh_token: str = Field(min_length=1, max_length=512)
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+    @field_validator("email")
+    @classmethod
+    def _normalise(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class ResetPasswordRequest(_Password):
+    """`password` here is the field name (not `new_password`): reuses
+    _Password's policy validator as-is rather than duplicating it under a
+    different field name."""
+
+    token: str = Field(min_length=1, max_length=512)
+
+
 class TokenPair(BaseModel):
     access_token: str
     refresh_token: str

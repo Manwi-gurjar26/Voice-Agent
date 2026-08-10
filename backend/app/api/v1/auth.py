@@ -5,20 +5,30 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request, Response, status
 
 from app.api.deps import CurrentUser, DbSession, client_ip
+from app.core.errors import RateLimitError
 from app.schemas.auth import (
+    ForgotPasswordRequest,
     LoginRequest,
     MeResponse,
     RefreshRequest,
+    ResetPasswordRequest,
     SignupRequest,
     TenantRead,
     TokenPair,
     UserRead,
 )
 from app.services import auth as auth_service
+from app.services import rate_limit
 
 router = APIRouter()
 
 ClientIP = Annotated[str | None, Depends(client_ip)]
+
+# An unauthenticated endpoint that triggers an external email send is
+# exactly what this limiter (already used by the public widget API — see
+# app/services/rate_limit.py) exists to protect against.
+_FORGOT_PASSWORD_LIMIT = 5
+_FORGOT_PASSWORD_WINDOW_SECONDS = 900
 
 
 def _user_agent(request: Request) -> str | None:
@@ -87,3 +97,38 @@ async def me(user: CurrentUser) -> MeResponse:
         user=UserRead.model_validate(user),
         tenant=TenantRead.model_validate(user.tenant),
     )
+
+
+@router.post(
+    "/forgot-password",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Request a password reset email",
+)
+async def forgot_password(payload: ForgotPasswordRequest, db: DbSession, ip: ClientIP) -> Response:
+    # Same response whether or not the address exists — see
+    # auth_service.request_password_reset's docstring. Rate limited before
+    # that call, not after, so the limiter also protects against spamming
+    # the identical-response endpoint itself, not just the ones that Send.
+    result = await rate_limit.check(
+        f"forgot-password:{ip or 'unknown'}",
+        limit=_FORGOT_PASSWORD_LIMIT,
+        window_seconds=_FORGOT_PASSWORD_WINDOW_SECONDS,
+    )
+    if not result.allowed:
+        raise RateLimitError(
+            "Too many password reset requests. Please try again later.",
+            details={"retry_after": result.retry_after},
+            headers={"Retry-After": str(result.retry_after)},
+        )
+    await auth_service.request_password_reset(db, payload.email)
+    return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+@router.post(
+    "/reset-password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Redeem a password reset token",
+)
+async def reset_password(payload: ResetPasswordRequest, db: DbSession) -> Response:
+    await auth_service.reset_password(db, payload.token, payload.password)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

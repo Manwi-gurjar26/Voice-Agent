@@ -145,6 +145,15 @@ class Settings(BaseSettings):
     dodo_product_id_enterprise: str | None = None
     dashboard_base_url: str = "http://localhost:3000"
 
+    # --- Password reset (Resend) ---
+    # No RESEND_API_KEY configured -> app/services/email.py logs the reset
+    # link instead of emailing it, so this whole flow is testable locally
+    # without a Resend account. email_from defaults to Resend's own
+    # no-verification-needed testing sender.
+    resend_api_key: str | None = None
+    email_from: str = "onboarding@resend.dev"
+    password_reset_token_expire_minutes: int = 30
+
     # --- Deployment (Step 10) ---
     # Unset (default) keeps app/services/rate_limit.py on its in-memory
     # backend — correct for local dev/tests and a single process. Set this

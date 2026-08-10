@@ -65,8 +65,11 @@ export function formatApiError(err: unknown): string {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, init);
   if (!res.ok) throw await errorFromResponse(res);
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  // Not just 204 — 202 Accepted (forgot-password) also has no body. Reading
+  // as text first and checking for emptiness covers any status that omits
+  // one, rather than special-casing each status code that might.
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 function jsonInit(method: string, body?: unknown): RequestInit {
@@ -132,6 +135,14 @@ export async function login(payload: LoginRequest): Promise<TokenPair> {
   const pair = await request<TokenPair>("/auth/login", jsonInit("POST", payload));
   storeAuth(pair);
   return pair;
+}
+
+export async function forgotPassword(email: string): Promise<void> {
+  await request("/auth/forgot-password", jsonInit("POST", { email }));
+}
+
+export async function resetPassword(token: string, password: string): Promise<void> {
+  await request("/auth/reset-password", jsonInit("POST", { token, password }));
 }
 
 export async function logout(): Promise<void> {

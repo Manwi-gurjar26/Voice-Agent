@@ -101,6 +101,7 @@ export default function AgentsPage() {
         </div>
         <Button
           render={<Link href="/agents/new" />}
+          nativeButton={false}
           className="bg-brand-gradient elev-2 h-10 border-0 text-white hover:opacity-95"
         >
           <Plus className="size-4" aria-hidden="true" />
@@ -135,6 +136,7 @@ export default function AgentsPage() {
           </div>
           <Button
             render={<Link href="/agents/new" />}
+            nativeButton={false}
             className="bg-brand-gradient elev-2 border-0 text-white hover:opacity-95"
           >
             <Sparkles className="size-4" aria-hidden="true" />
@@ -196,6 +198,7 @@ export default function AgentsPage() {
                   <span className="flex gap-1">
                     <Button
                       render={<Link href={`/agents/${agent.id}`} />}
+                      nativeButton={false}
                       variant="ghost"
                       size="sm"
                       className="gap-1.5"

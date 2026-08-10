@@ -5,11 +5,13 @@ import {
   createCheckoutSession,
   createPortalSession,
   deleteAgent,
+  forgotPassword,
   getAgent,
   listAgents,
   login,
   logout,
   me,
+  resetPassword,
   signup,
   updateAgent,
 } from "./api";
@@ -60,6 +62,53 @@ describe("api", () => {
     await login({ email: "a@b.com", password: "hunter2hunter2" });
 
     expect(loadAuth()?.accessToken).toBe("acc");
+  });
+
+  it("forgotPassword POSTs the email and stores no session", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 202 }));
+
+    await forgotPassword("a@b.com");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/auth/forgot-password`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ email: "a@b.com" });
+    expect(loadAuth()).toBeNull();
+  });
+
+  it("forgotPassword propagates an ApiError on failure", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ error: { code: "rate_limited", message: "Too many requests." } }, 429),
+    );
+
+    await expect(forgotPassword("a@b.com")).rejects.toMatchObject({ code: "rate_limited" });
+  });
+
+  it("resetPassword POSTs the token and new password", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await resetPassword("tok_abc", "new-correct-horse-99");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/auth/reset-password`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      token: "tok_abc",
+      password: "new-correct-horse-99",
+    });
+  });
+
+  it("resetPassword propagates an ApiError on an invalid token", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        { error: { code: "invalid_reset_token", message: "This password reset link is invalid or has expired." } },
+        401,
+      ),
+    );
+
+    await expect(resetPassword("bad-token", "new-correct-horse-99")).rejects.toMatchObject({
+      code: "invalid_reset_token",
+    });
   });
 
   it("throws an ApiError carrying the backend's code and message on failure", async () => {

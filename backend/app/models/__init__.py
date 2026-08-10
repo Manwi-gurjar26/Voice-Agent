@@ -10,6 +10,7 @@ from app.models.conversation import Conversation
 from app.models.document import Document
 from app.models.enums import AgentStatus, EffortLevel, PlanTier, UserRole
 from app.models.message import Message
+from app.models.password_reset_token import PasswordResetToken
 from app.models.refresh_token import RefreshToken
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -23,6 +24,7 @@ __all__ = [
     "Document",
     "EffortLevel",
     "Message",
+    "PasswordResetToken",
     "PlanTier",
     "RefreshToken",
     "Tenant",

@@ -12,6 +12,7 @@ def test_all_expected_tables_are_registered():
         "users",
         "agents",
         "refresh_tokens",
+        "password_reset_tokens",
         "widget_sessions",
         "conversations",
         "messages",
