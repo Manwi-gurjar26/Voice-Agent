@@ -11,7 +11,7 @@ from app.models import Conversation, Message, Tenant
 from app.services import llm
 from tests.test_auth import bearer, register
 from tests.test_public import ORIGIN, make_active_agent
-from tests.groq_fakes import install_fake_groq_client
+from tests.groq_fakes import install_fake_chat_client, install_fake_groq_client
 
 PREFIX = settings.api_v1_prefix
 
@@ -105,9 +105,10 @@ class FakeGeminiClient:
         self.aio = _FakeAio(_FakeModelsResource(factory))
 
 
-def install_fake_client(monkeypatch, chunks=("Hello", ", ", "world!"), **stream_kwargs):
-    """Patch app.services.llm.get_gemini_client for the duration of a
-    test. Returns the fake client so tests can inspect what was requested."""
+def install_fake_gemini_client(monkeypatch, chunks=("Hello", ", ", "world!"), **stream_kwargs):
+    """Patch app.services.llm.get_gemini_client — the *fallback* provider
+    for typed chat. Returns the fake client so tests can inspect what was
+    requested."""
 
     def factory(**_kwargs):
         return _FakeGeminiStream(chunks, **stream_kwargs)
@@ -202,7 +203,7 @@ async def test_conversations_require_a_widget_session(client):
 async def test_send_message_streams_deltas_and_a_done_event(client, monkeypatch):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=("Hi", " there", "!"))
+    install_fake_chat_client(monkeypatch, chunks=("Hi", " there", "!"))
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -223,13 +224,13 @@ async def test_send_message_streams_deltas_and_a_done_event(client, monkeypatch)
     done_events = [data for event, data in events if event == "done"]
     assert len(done_events) == 1
     assert done_events[0]["usage"] == {"input_tokens": 42, "output_tokens": 7}
-    assert done_events[0]["stop_reason"] == "STOP"
+    assert done_events[0]["stop_reason"] == "stop"
 
 
 async def test_sent_message_and_reply_are_both_persisted(client, monkeypatch, db_session):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=("The answer is 42.",))
+    install_fake_chat_client(monkeypatch, chunks=("The answer is 42.",))
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -258,7 +259,7 @@ async def test_sent_message_and_reply_are_both_persisted(client, monkeypatch, db
 async def test_conversation_last_message_at_is_updated(client, monkeypatch, db_session):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=("Ok",))
+    install_fake_chat_client(monkeypatch, chunks=("Ok",))
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -280,7 +281,7 @@ async def test_conversation_last_message_at_is_updated(client, monkeypatch, db_s
 async def test_message_list_endpoint_returns_full_history(client, monkeypatch):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=("Reply one",))
+    install_fake_chat_client(monkeypatch, chunks=("Reply one",))
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -299,12 +300,12 @@ async def test_message_list_endpoint_returns_full_history(client, monkeypatch):
     assert contents == [("user", "Question one"), ("assistant", "Reply one")]
 
 
-async def test_gemini_is_called_with_the_agents_configuration(client, monkeypatch):
+async def test_the_llm_is_called_with_the_agents_configuration(client, monkeypatch):
     tokens = await register(client)
     agent, session = await make_widget_session(
         client, tokens, effort="xhigh", max_output_tokens=1024
     )
-    fake_client = install_fake_client(monkeypatch, chunks=("ok",))
+    fake_client = install_fake_chat_client(monkeypatch, chunks=("ok",))
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -315,22 +316,22 @@ async def test_gemini_is_called_with_the_agents_configuration(client, monkeypatc
         headers=session_auth(session),
     )
 
-    kwargs = fake_client.aio.models.last_kwargs
+    kwargs = fake_client.last_kwargs
     assert kwargs["model"] == agent["model"]
-    config = kwargs["config"]
-    assert config.max_output_tokens == 1024
-    assert config.thinking_config.thinking_budget == 16384  # xhigh
-    assert config.system_instruction == agent["system_prompt"]
-    # No temperature/top_p/top_k anywhere — this app exposes only `effort`
-    # (-> thinking_budget) as its one reasoning-depth knob.
-    assert config.temperature is None
-    assert config.top_p is None
+    assert kwargs["max_tokens"] == 1024
+    assert kwargs["stream"] is True
+    assert kwargs["messages"][0] == {"role": "system", "content": agent["system_prompt"]}
+    # No temperature/top_p/top_k anywhere — this app deliberately exposes no
+    # sampling knobs. (`effort` only reaches the Gemini fallback, which has a
+    # thinking budget; Groq has no equivalent.)
+    assert "temperature" not in kwargs
+    assert "top_p" not in kwargs
 
 
 async def test_multi_turn_history_alternates_correctly(client, monkeypatch):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    fake_client = install_fake_client(monkeypatch, chunks=("Reply",))
+    fake_client = install_fake_chat_client(monkeypatch, chunks=("Reply",))
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -347,11 +348,10 @@ async def test_multi_turn_history_alternates_correctly(client, monkeypatch):
         headers=session_auth(session),
     )
 
-    second_call_contents = fake_client.aio.models.last_kwargs["contents"]
-    roles = [c.role for c in second_call_contents]
-    assert roles == ["user", "model", "user"]
-    assert second_call_contents[0].parts[0].text == "First question"
-    assert second_call_contents[-1].parts[0].text == "Second question"
+    messages = fake_client.last_kwargs["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+    assert messages[1]["content"] == "First question"
+    assert messages[-1]["content"] == "Second question"
 
 
 # --------------------------------------------------------------------------
@@ -360,9 +360,9 @@ async def test_multi_turn_history_alternates_correctly(client, monkeypatch):
 async def test_gemini_error_surfaces_as_an_sse_error_event_not_a_500(client, monkeypatch):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=(), error=RuntimeError("boom"))
-    # Both providers down: Gemini alone failing now falls back to Groq.
-    install_fake_groq_client(monkeypatch, reply=RuntimeError("groq down too"))
+    install_fake_chat_client(monkeypatch, chunks=(), error=RuntimeError("boom"))
+    install_fake_gemini_client(monkeypatch, chunks=(), error=RuntimeError("gemini down too"))
+    monkeypatch.setattr(settings, "gemini_api_key", "test-key")  # fallback is configured
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -386,8 +386,8 @@ async def test_a_failed_turn_still_persists_the_user_message(client, monkeypatch
     otherwise a flaky LLM call would let a client retry for free."""
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=(), error=RuntimeError("boom"))
-    install_fake_groq_client(monkeypatch, reply=RuntimeError("groq down too"))
+    install_fake_chat_client(monkeypatch, chunks=(), error=RuntimeError("boom"))
+    monkeypatch.setattr(settings, "gemini_api_key", None)  # no fallback configured
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -406,13 +406,14 @@ async def test_a_failed_turn_still_persists_the_user_message(client, monkeypatch
 async def test_a_failed_turn_still_leaves_alternating_history_for_the_next_message(
     client, monkeypatch, db_session
 ):
-    """After a failed turn, the conversation has a lone unanswered user
-    message. The NEXT user message must not produce two consecutive user
-    turns in the Gemini request — _build_gemini_contents merges them."""
+    """After a failed turn the conversation holds a lone unanswered user
+    message, and the next message has to carry it along so the reply still
+    has that context. Groq (OpenAI-shaped) accepts consecutive same-role
+    messages, so unlike the Gemini fallback they are not merged."""
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=(), error=RuntimeError("boom"))
-    install_fake_groq_client(monkeypatch, reply=RuntimeError("groq down too"))
+    install_fake_chat_client(monkeypatch, chunks=(), error=RuntimeError("boom"))
+    monkeypatch.setattr(settings, "gemini_api_key", None)  # no fallback configured
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -424,22 +425,23 @@ async def test_a_failed_turn_still_leaves_alternating_history_for_the_next_messa
     )
 
     # Second attempt succeeds.
-    fake_client = install_fake_client(monkeypatch, chunks=("ok",))
+    fake_client = install_fake_chat_client(monkeypatch, chunks=("ok",))
     await client.post(
         f"{PREFIX}/public/conversations/{conv['id']}/messages",
         json={"content": "second (will succeed)"},
         headers=session_auth(session),
     )
 
-    sent_contents = fake_client.aio.models.last_kwargs["contents"]
-    assert [c.role for c in sent_contents] == ["user"]
-    assert sent_contents[0].parts[0].text == "first (will fail)\n\nsecond (will succeed)"
+    messages = fake_client.last_kwargs["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "user"]
+    assert messages[1]["content"] == "first (will fail)"
+    assert messages[2]["content"] == "second (will succeed)"
 
 
 async def test_empty_message_is_rejected(client, monkeypatch):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch)
+    install_fake_chat_client(monkeypatch)
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -460,7 +462,7 @@ async def test_quota_exceeded_surfaces_as_an_sse_error_and_saves_nothing(
 ):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=("should not be reached",))
+    install_fake_chat_client(monkeypatch, chunks=("should not be reached",))
 
     tenant = await db_session.scalar(select(Tenant))
     tenant.monthly_message_quota = 0
@@ -490,7 +492,7 @@ async def test_quota_allows_exactly_the_configured_number_of_messages(
 ):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=("ok",))
+    install_fake_chat_client(monkeypatch, chunks=("ok",))
 
     tenant = await db_session.scalar(select(Tenant))
     tenant.monthly_message_quota = 2
@@ -518,7 +520,7 @@ async def test_quota_period_resets_after_the_rolling_window(client, monkeypatch,
 
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=("ok",))
+    install_fake_chat_client(monkeypatch, chunks=("ok",))
 
     tenant = await db_session.scalar(select(Tenant))
     tenant.monthly_message_quota = 1
@@ -566,7 +568,7 @@ async def test_sending_messages_is_rate_limited(client, monkeypatch):
     assert session_resp.status_code == 200
     session = session_resp.json()
 
-    install_fake_client(monkeypatch, chunks=("ok",))
+    install_fake_chat_client(monkeypatch, chunks=("ok",))
     conv_resp = await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
     assert conv_resp.status_code == 429
 
@@ -599,7 +601,7 @@ async def test_response_streams_incrementally_not_all_at_once(app, monkeypatch):
     import httpx
     import uvicorn
 
-    install_fake_client(monkeypatch, chunks=("a", "b", "c"), delay_seconds=0.2)
+    install_fake_chat_client(monkeypatch, chunks=("a", "b", "c"), delay_seconds=0.2)
 
     config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="critical")
     server = uvicorn.Server(config)
@@ -706,7 +708,7 @@ async def test_relevant_chunks_are_injected_into_the_system_prompt(client, monke
         embedding=[1.0, 0.0],  # identical to the fake query vector: perfect match
     )
 
-    fake_client = install_fake_client(monkeypatch, chunks=("We're open 9-5.",))
+    fake_client = install_fake_chat_client(monkeypatch, chunks=("We're open 9-5.",))
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
     ).json()
@@ -716,7 +718,7 @@ async def test_relevant_chunks_are_injected_into_the_system_prompt(client, monke
         headers=session_auth(session),
     )
 
-    sent_system = fake_client.aio.models.last_kwargs["config"].system_instruction
+    sent_system = fake_client.last_kwargs["messages"][0]["content"]
     assert "We are open 9am to 5pm" in sent_system
     assert "Business Hours" in sent_system
     assert sent_system.startswith(agent["system_prompt"])  # base prompt preserved, not replaced
@@ -741,7 +743,7 @@ async def test_response_includes_citations_when_retrieval_matched(client, monkey
         embedding=[1.0, 0.0],
     )
 
-    install_fake_client(monkeypatch, chunks=("Refunds are available within 30 days.",))
+    install_fake_chat_client(monkeypatch, chunks=("Refunds are available within 30 days.",))
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
     ).json()
@@ -774,7 +776,7 @@ async def test_citations_are_persisted_on_the_assistant_message(client, monkeypa
         content="We ship within 2 business days.",
         embedding=[1.0, 0.0],
     )
-    install_fake_client(monkeypatch, chunks=("2 business days.",))
+    install_fake_chat_client(monkeypatch, chunks=("2 business days.",))
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -832,7 +834,7 @@ async def test_multiple_matching_chunks_from_the_same_document_cite_it_once(
         )
     await db_session.commit()
 
-    install_fake_client(monkeypatch, chunks=("Answer.",))
+    install_fake_chat_client(monkeypatch, chunks=("Answer.",))
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
     ).json()
@@ -863,7 +865,7 @@ async def test_no_knowledge_base_means_unmodified_prompt_and_no_citations(client
 
     monkeypatch.setattr(embeddings, "embed_query", tracking_embed_query)
 
-    fake_client = install_fake_client(monkeypatch, chunks=("Just an answer.",))
+    fake_client = install_fake_chat_client(monkeypatch, chunks=("Just an answer.",))
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
     ).json()
@@ -873,7 +875,7 @@ async def test_no_knowledge_base_means_unmodified_prompt_and_no_citations(client
         headers=session_auth(session),
     )
 
-    assert fake_client.aio.models.last_kwargs["config"].system_instruction == agent["system_prompt"]
+    assert fake_client.last_kwargs["messages"][0]["content"] == agent["system_prompt"]
     done = next(data for event, data in parse_sse(response.text) if event == "done")
     assert done["citations"] == []
     assert embed_calls == []  # agent_has_chunks short-circuited before any embedding call
@@ -901,7 +903,7 @@ async def test_irrelevant_question_below_similarity_threshold_gets_no_citations(
         embedding=[0.0, 1.0],
     )
     install_fake_embeddings(monkeypatch, vector=[1.0, 0.0])
-    install_fake_client(monkeypatch, chunks=("An answer.",))
+    install_fake_chat_client(monkeypatch, chunks=("An answer.",))
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -917,18 +919,18 @@ async def test_irrelevant_question_below_similarity_threshold_gets_no_citations(
 
 
 # --------------------------------------------------------------------------
-# Gemini -> Groq fallback
+# Groq -> Gemini fallback
 #
-# Gemini's free tier allows only 20 generate-content requests per day per
-# model (confirmed from a live 429: quotaId
-# GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue 20). Without a
-# fallback, a site's chatbot simply stops answering for the rest of the day.
+# Typed chat runs on Groq (Gemini's free tier allows only 20 requests per day
+# per model, which stopped customers' chatbots answering mid-afternoon).
+# Gemini stays on as a stand-in for when Groq itself is unavailable.
 # --------------------------------------------------------------------------
-async def test_typed_chat_falls_back_to_groq_when_gemini_is_rate_limited(client, monkeypatch):
+async def test_typed_chat_falls_back_to_gemini_when_groq_is_unavailable(client, monkeypatch):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=(), error=RuntimeError("429 RESOURCE_EXHAUSTED"))
-    install_fake_groq_client(monkeypatch, reply="We are open 9 to 5.")
+    install_fake_chat_client(monkeypatch, chunks=(), error=RuntimeError("groq unavailable"))
+    install_fake_gemini_client(monkeypatch, chunks=("We are open 9 to 5.",))
+    monkeypatch.setattr(settings, "gemini_api_key", "test-key")
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -951,8 +953,9 @@ async def test_typed_chat_falls_back_to_groq_when_gemini_is_rate_limited(client,
 async def test_the_fallback_reply_is_persisted_like_any_other(client, monkeypatch, db_session):
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=(), error=RuntimeError("429 RESOURCE_EXHAUSTED"))
-    install_fake_groq_client(monkeypatch, reply="Fallback answer.")
+    install_fake_chat_client(monkeypatch, chunks=(), error=RuntimeError("groq unavailable"))
+    install_fake_gemini_client(monkeypatch, chunks=("Fallback answer.",))
+    monkeypatch.setattr(settings, "gemini_api_key", "test-key")
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -968,13 +971,14 @@ async def test_the_fallback_reply_is_persisted_like_any_other(client, monkeypatc
     assert "Fallback answer." in rows[1].content
 
 
-async def test_a_partly_streamed_gemini_reply_does_not_restart_on_groq(client, monkeypatch):
+async def test_a_partly_streamed_reply_does_not_restart_on_the_fallback(client, monkeypatch):
     """Text already sent to the browser can't be un-sent — retrying would
     show the visitor the beginning of the answer twice."""
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
-    install_fake_client(monkeypatch, chunks=("Half an answer",), error=RuntimeError("died midway"))
-    install_fake_groq_client(monkeypatch, reply="A completely different answer.")
+    install_fake_chat_client(monkeypatch, chunks=("Half an answer",), error=RuntimeError("died midway"))
+    install_fake_gemini_client(monkeypatch, chunks=("A completely different answer.",))
+    monkeypatch.setattr(settings, "gemini_api_key", "test-key")
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))

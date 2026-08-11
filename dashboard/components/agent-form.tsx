@@ -261,7 +261,7 @@ export function AgentForm({ mode, defaultValues, onSubmit, submitting, submitLab
       >
         <div className="flex flex-col gap-2">
           <Label htmlFor="model">Model (blank = platform default)</Label>
-          <Input id="model" className="h-10 font-mono text-xs" placeholder="gemini-flash-latest" {...register("model")} />
+          <Input id="model" className="h-10 font-mono text-xs" placeholder="llama-3.3-70b-versatile" {...register("model")} />
         </div>
         <div className="flex flex-col gap-2">
           <Label htmlFor="effort">Effort</Label>

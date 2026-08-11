@@ -245,30 +245,62 @@ async def _prepare_turn(
     return system_prompt, gemini_contents, history, relevant_chunks
 
 
-async def _stream_groq_fallback(
-    system_prompt: str, history: list[Message], agent: Agent
+async def _stream_groq_reply(
+    system_prompt: str, history: list[Message], agent: Agent, stats: dict
 ) -> AsyncIterator[str]:
-    """Answer with Groq when Gemini won't.
+    """Typed chat's primary provider.
 
-    Gemini's free tier allows only 20 generate-content requests per day per
-    model (confirmed from the live 429: quotaId
+    Groq, not Gemini: Gemini's free tier allows only 20 generate-content
+    requests per day per model (confirmed from a live 429: quotaId
     GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue 20), after
-    which every typed message fails for the rest of the day — the chatbot
-    simply stops answering on a visitor's site. Groq already powers the voice
-    replies on a far larger free allowance, so it stands in rather than
-    letting the widget show an error.
+    which a customer's chatbot stops answering for the rest of the day.
     """
     client = groq_llm.get_groq_client()
     stream = await client.chat.completions.create(
-        model=GROQ_VOICE_MODEL,
+        model=agent.model,
         messages=_build_groq_messages(system_prompt, history),
         max_tokens=agent.max_output_tokens,
         stream=True,
     )
     async for chunk in stream:
-        text = chunk.choices[0].delta.content if chunk.choices else None
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            stats["input_tokens"] = usage.prompt_tokens
+            stats["output_tokens"] = usage.completion_tokens
+        choices = getattr(chunk, "choices", None)
+        if not choices:
+            continue
+        choice = choices[0]
+        if getattr(choice, "finish_reason", None):
+            stats["finish_reason"] = choice.finish_reason
+        delta = getattr(choice, "delta", None)
+        text = getattr(delta, "content", None) if delta is not None else None
         if text:
             yield text
+
+
+async def _stream_gemini_reply(
+    gemini_contents: list[types.Content], system_prompt: str, agent: Agent, stats: dict
+) -> AsyncIterator[str]:
+    """Fallback for when Groq is unavailable, used only if a Gemini key is
+    configured. Runs on its own configured model, since agent.model now names
+    a Groq model."""
+    client = llm.get_gemini_client()
+    stream = await client.aio.models.generate_content_stream(
+        model=settings.gemini_fallback_model,
+        contents=gemini_contents,
+        config=_generation_config(agent, system_prompt),
+    )
+    async for chunk in stream:
+        if chunk.text:
+            yield chunk.text
+        usage = chunk.usage_metadata
+        if usage is not None:
+            stats["input_tokens"] = usage.prompt_token_count
+            stats["output_tokens"] = usage.candidates_token_count
+        if chunk.candidates:
+            reason = chunk.candidates[0].finish_reason
+            stats["finish_reason"] = reason.value if reason is not None else None
 
 
 async def stream_turn(
@@ -288,55 +320,39 @@ async def stream_turn(
         return
 
     accumulated = ""
-    final_chunk: types.GenerateContentResponse | None = None
+    stats: dict = {"input_tokens": 0, "output_tokens": 0, "finish_reason": None}
+    llm_error = _sse(
+        "error",
+        {
+            "code": "llm_error",
+            "message": "The assistant is temporarily unavailable. Please try again.",
+        },
+    )
     try:
-        client = llm.get_gemini_client()
-        stream = await client.aio.models.generate_content_stream(
-            model=agent.model,
-            contents=gemini_contents,
-            config=_generation_config(agent, system_prompt),
-        )
-        async for chunk in stream:
-            if chunk.text:
-                accumulated += chunk.text
-                yield _sse("delta", {"text": chunk.text})
-            final_chunk = chunk
+        async for text in _stream_groq_reply(system_prompt, history, agent, stats):
+            accumulated += text
+            yield _sse("delta", {"text": text})
     except Exception:
-        logger.exception("Gemini call failed for conversation %s", conversation.id)
-        # Anything already streamed would be duplicated by a retry, so only a
-        # turn that produced nothing can fall back.
-        if accumulated:
-            yield _sse(
-                "error",
-                {
-                    "code": "llm_error",
-                    "message": "The assistant is temporarily unavailable. Please try again.",
-                },
-            )
+        logger.exception("Groq call failed for conversation %s", conversation.id)
+        # Text already sent to the browser can't be un-sent, so only a turn
+        # that produced nothing may be retried on the other provider.
+        if accumulated or not settings.gemini_api_key:
+            yield llm_error
             return
         try:
-            async for text in _stream_groq_fallback(system_prompt, history, agent):
+            async for text in _stream_gemini_reply(
+                gemini_contents, system_prompt, agent, stats
+            ):
                 accumulated += text
                 yield _sse("delta", {"text": text})
         except Exception:
-            logger.exception("Groq fallback also failed for conversation %s", conversation.id)
-            yield _sse(
-                "error",
-                {
-                    "code": "llm_error",
-                    "message": "The assistant is temporarily unavailable. Please try again.",
-                },
-            )
+            logger.exception("Gemini fallback also failed for conversation %s", conversation.id)
+            yield llm_error
             return
 
-    usage = final_chunk.usage_metadata if final_chunk is not None else None
-    input_tokens = usage.prompt_token_count if usage else 0
-    output_tokens = usage.candidates_token_count if usage else 0
-    finish_reason = (
-        final_chunk.candidates[0].finish_reason
-        if final_chunk is not None and final_chunk.candidates
-        else None
-    )
+    input_tokens = stats["input_tokens"]
+    output_tokens = stats["output_tokens"]
+    finish_reason = stats["finish_reason"]
 
     citations = _citations_from_chunks(relevant_chunks)
     assistant_message = Message(
@@ -355,7 +371,7 @@ async def stream_turn(
         "done",
         {
             "message_id": str(assistant_message.id),
-            "stop_reason": finish_reason.value if finish_reason is not None else None,
+            "stop_reason": finish_reason,
             "usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,

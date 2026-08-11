@@ -79,8 +79,18 @@ class Settings(BaseSettings):
     # it always resolves to their current recommended flash model, so this
     # setting doesn't go stale the next time they retire one. Overridable
     # per-agent via Agent.model regardless.
+    # Typed chat runs on Groq. Gemini's free tier allows only 20
+    # generate-content requests per day per model (confirmed from a live 429:
+    # quotaId GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue
+    # 20), which a single busy afternoon on one customer's site exhausts —
+    # after that the widget stops answering entirely. Groq's free allowance
+    # for this model is 1,000 requests/day. Gemini remains as a fallback when
+    # a key is configured; see chat.py's _stream_gemini_reply.
     gemini_api_key: str | None = None
-    default_model: str = "gemini-flash-latest"
+    gemini_fallback_model: str = "gemini-flash-latest"
+    # 70b rather than the 8b model voice uses: a typed answer is read, not
+    # heard, so quality matters more than the last few hundred milliseconds.
+    default_model: str = "llama-3.3-70b-versatile"
 
     # --- RAG (Step 5) ---
     # Local model — no API key needed. Swappable, but the embedding dimension
