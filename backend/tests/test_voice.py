@@ -354,3 +354,80 @@ async def test_synthesis_sends_the_flattened_text_not_the_raw_markdown(monkeypat
     await voice.synthesize_speech("Use **bold** and `code`.", None)
 
     assert captured["text"] == "Use bold and code."
+
+
+# --------------------------------------------------------------------------
+# Speaker and language stability
+#
+# With no reference_id, Fish Audio's free model draws from its whole
+# multilingual catalogue, so the speaker changes between replies: measuring
+# synthesized pitch across four identical requests gave 131/174/123/113 Hz —
+# male, female, male — and sometimes a voice from another language, which is
+# what made a conversation sound like it switched language halfway through.
+# --------------------------------------------------------------------------
+def _capture_tts(monkeypatch) -> dict:
+    captured: dict = {}
+
+    class FakeResponse:
+        content = b"audio"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, _url, **kwargs):
+            captured.update(kwargs["json"])
+            return FakeResponse()
+
+    monkeypatch.setattr(voice.httpx, "AsyncClient", lambda **_kw: FakeClient())
+    return captured
+
+
+async def test_synthesis_always_pins_a_voice(monkeypatch):
+    captured = _capture_tts(monkeypatch)
+    monkeypatch.setattr(settings, "voice_default_voice", "voice-abc")
+
+    await voice.synthesize_speech("Hello there.", None)
+
+    assert captured["reference_id"] == "voice-abc"
+
+
+async def test_an_agents_own_voice_still_wins(monkeypatch):
+    captured = _capture_tts(monkeypatch)
+    monkeypatch.setattr(settings, "voice_default_voice", "platform-default")
+
+    await voice.synthesize_speech("Hello there.", "agent-chosen-voice")
+
+    assert captured["reference_id"] == "agent-chosen-voice"
+
+
+async def test_transcription_is_told_the_language_instead_of_guessing(monkeypatch):
+    captured: dict = {}
+
+    class FakeTranscriptions:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+
+            class R:
+                text = "hello"
+
+            return R()
+
+    class FakeAudio:
+        transcriptions = FakeTranscriptions()
+
+    class FakeClient:
+        audio = FakeAudio()
+
+    monkeypatch.setattr(voice, "get_groq_client", lambda: FakeClient())
+    monkeypatch.setattr(settings, "voice_language", "en")
+
+    await voice.transcribe_audio(b"clip", "recording.webm")
+
+    assert captured["language"] == "en"

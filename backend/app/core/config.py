@@ -140,14 +140,26 @@ class Settings(BaseSettings):
     # complete_turn) and Fish Audio (TTS via its s2.1-pro-free model — see
     # app/services/voice.py). voice_enabled is per-agent (see Agent model).
     # groq_api_key is separate from gemini_api_key: Groq is used only for
-    # voice, typed chat stays on Gemini. voice_default_voice, when set, is a
-    # Fish Audio reference_id (a voice clone/preset from that account's
-    # voice library) — left unset to use Fish Audio's default voice, since
-    # the free s2.1-pro-free model was only confirmed working with no
-    # reference_id specified.
+    # voice, typed chat runs on Groq's chat model (see default_model).
+    #
+    # voice_default_voice must stay set. Fish Audio's free model picks from
+    # its whole multilingual catalogue when no reference_id is given, so the
+    # speaker changes between replies: measuring the synthesized pitch across
+    # four identical requests gave 131 Hz, 174 Hz, 123 Hz, 113 Hz — male, then
+    # female, then male, and occasionally a voice from another language, which
+    # is what made replies sound like they switched language mid-conversation.
+    # Pinning a reference_id holds one speaker (the same measurement then
+    # spans 17 Hz) and keeps every reply in English. Contrary to an earlier
+    # note here, the free s2.1-pro-free model does honour reference_id.
     groq_api_key: str | None = None
     fish_audio_api_key: str | None = None
-    voice_default_voice: str | None = None
+    voice_default_voice: str | None = "933563129e564b19a115bedd57b7406a"
+    # Locks both ends of the spoken turn: Whisper is told what language to
+    # expect rather than guessing from a short, accented clip, and the reply
+    # is asked for in the same language. Auto-detection drifting mid-sentence
+    # is what makes an assistant answer in a language the visitor never used.
+    voice_language: str = "en"
+    voice_language_name: str = "English"
     max_voice_upload_bytes: int = 10 * 1024 * 1024
 
     # --- Billing (Step 9) ---

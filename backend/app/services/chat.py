@@ -36,11 +36,22 @@ GROQ_VOICE_MODEL = "llama-3.1-8b-instant"
 # and steered toward spoken-style brevity, independent of the agent's
 # text-chat length setting.
 _VOICE_MAX_TOKENS = 120
-_VOICE_BREVITY_INSTRUCTION = (
-    "\n\nThis reply will be converted to speech and read aloud, so keep it "
-    "brief and conversational — at most 2-3 short sentences, no lists, "
-    "tables, or markdown formatting."
-)
+
+
+def _voice_instruction() -> str:
+    """Spoken-turn guidance appended to the agent's own system prompt.
+
+    The language is stated explicitly: a transcript that came back in the
+    wrong language would otherwise drag the reply along with it, and the
+    visitor hears an answer in a language they never used.
+    """
+    return (
+        "\n\nThis reply will be converted to speech and read aloud, so keep it "
+        "brief and conversational — at most 2-3 short sentences, no lists, "
+        f"tables, or markdown formatting. Always reply in "
+        f"{settings.voice_language_name}, whatever language the question "
+        "appears to be in."
+    )
 
 # Defensive cap on how much history we load and resend to the model per turn
 # — not a product-facing pagination limit. A conversation this long is
@@ -407,7 +418,7 @@ async def complete_turn(
         client = groq_llm.get_groq_client()
         response = await client.chat.completions.create(
             model=GROQ_VOICE_MODEL,
-            messages=_build_groq_messages(system_prompt + _VOICE_BREVITY_INSTRUCTION, history),
+            messages=_build_groq_messages(system_prompt + _voice_instruction(), history),
             max_tokens=min(agent.max_output_tokens, _VOICE_MAX_TOKENS),
         )
     except Exception as exc:

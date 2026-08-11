@@ -102,6 +102,10 @@ async def transcribe_audio(audio_bytes: bytes, filename: str) -> str:
         response = await client.audio.transcriptions.create(
             model=_STT_MODEL,
             file=(filename, audio_bytes),
+            # Told, not guessed: auto-detection on a short, accented clip can
+            # land on the wrong language, and the reply then follows the
+            # transcript into a language the visitor never spoke.
+            language=settings.voice_language,
         )
     except Exception as exc:
         raise VoiceUnavailableError(f"Could not reach Groq's speech-to-text: {exc}") from exc
@@ -121,8 +125,11 @@ async def synthesize_speech(text: str, voice: str | None) -> bytes:
     chars) can take a minute or more to speak.
     """
     payload: dict = {"text": to_speakable_text(text)[:600]}
-    if voice:
-        payload["reference_id"] = voice
+    # Falling through to no reference_id at all is what let the speaker (and
+    # apparent language) change between replies — see voice_default_voice.
+    reference_id = voice or settings.voice_default_voice
+    if reference_id:
+        payload["reference_id"] = reference_id
     try:
         async with httpx.AsyncClient(timeout=45.0) as client:
             response = await client.post(
