@@ -252,6 +252,54 @@ describe("voiceCapture", () => {
       expect(done).toBe(false);
     });
 
+    it("works in a noisy room, where a fixed threshold would never hear silence", async () => {
+      // Ambient noise sits ABOVE the old fixed 0.015 threshold — a fan, AC, a
+      // hissy laptop mic. Previously the level never dropped "below silence",
+      // so the turn never ended and the visitor had to tap again.
+      vi.useFakeTimers();
+      const audio = fakeAudioContext();
+      audio.level = 0.06; // room tone, nobody speaking
+      const recorder = new VoiceRecorder({ autoStopOnSilence: true });
+      await recorder.start();
+
+      let done = false;
+      void recorder.completion?.then(() => {
+        done = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(500); // let the floor be measured
+      audio.level = 0.4; // speaking, well above the room tone
+      await vi.advanceTimersByTimeAsync(800);
+      expect(done).toBe(false);
+
+      audio.level = 0.06; // back to just room tone = finished speaking
+      await vi.advanceTimersByTimeAsync(1_700);
+      expect(done).toBe(true);
+      expect(recorder.speechDetected).toBe(true);
+    });
+
+    it("hears a quiet microphone whose speech never reaches the fixed threshold", async () => {
+      vi.useFakeTimers();
+      const audio = fakeAudioContext();
+      audio.level = 0.001; // near-silent mic
+      const recorder = new VoiceRecorder({ autoStopOnSilence: true });
+      await recorder.start();
+
+      let done = false;
+      void recorder.completion?.then(() => {
+        done = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(300);
+      audio.level = 0.02; // quiet speech, but 20x the noise floor
+      await vi.advanceTimersByTimeAsync(800);
+      audio.level = 0.001;
+      await vi.advanceTimersByTimeAsync(1_700);
+
+      expect(done).toBe(true);
+      expect(recorder.speechDetected).toBe(true);
+    });
+
     it("gives up if the visitor never says anything", async () => {
       vi.useFakeTimers();
       fakeAudioContext(); // stays at level 0 throughout

@@ -14,10 +14,22 @@ const MAX_RECORDING_MS = 120_000;
 // How often the mic level is sampled. Counted in ticks rather than wall-clock
 // timestamps so the behaviour is deterministic under fake timers.
 const SILENCE_POLL_MS = 100;
-// RMS amplitude (0..1) at or above which the visitor is considered to be
-// speaking. Room tone and mic self-noise sit well under this; normal speech
-// sits well over it.
+// Absolute floor for the "is someone speaking" threshold, used in a quiet
+// room where the measured noise floor is near zero. A fixed threshold alone
+// is not enough: a real room (fan, AC, street noise, a hissy laptop mic) can
+// sit *above* any fixed value, in which case the recording never looks silent
+// and never ends on its own — while a quiet mic can sit below it, so speech
+// never registers at all. The live threshold is therefore derived from the
+// quietest level actually observed, and this is only its lower bound.
 const DEFAULT_SILENCE_THRESHOLD = 0.015;
+// How far above the measured noise floor a level must be to count as speech.
+const SPEECH_OVER_NOISE = 3;
+// Ceiling on the estimated noise floor. Someone who starts talking the
+// instant they tap gives the estimator nothing but speech to look at, which
+// would otherwise set the floor at speaking volume and leave the recorder
+// deaf for the rest of the turn. No real room tone is this loud, so a higher
+// reading is treated as mis-measurement rather than trusted.
+const MAX_NOISE_FLOOR = 0.05;
 // How long the visitor must stay quiet *after having spoken* before the turn
 // is considered finished. Long enough to survive the natural pauses between
 // words and sentences, short enough not to feel laggy.
@@ -181,7 +193,7 @@ export class VoiceRecorder {
     // case where a browser hands back a suspended context anyway.
     if (context.state === "suspended") void context.resume();
 
-    const threshold = this.options.silenceThreshold ?? DEFAULT_SILENCE_THRESHOLD;
+    const minThreshold = this.options.silenceThreshold ?? DEFAULT_SILENCE_THRESHOLD;
     const silenceTicks = Math.ceil(
       (this.options.silenceDurationMs ?? DEFAULT_SILENCE_DURATION_MS) / SILENCE_POLL_MS,
     );
@@ -193,6 +205,10 @@ export class VoiceRecorder {
     let hasSpoken = false;
     let quietTicks = 0;
     let totalTicks = 0;
+    // The quietest level seen so far — a running estimate of this room's
+    // noise floor, which adapts to whatever mic and surroundings the visitor
+    // actually has instead of assuming a silent studio.
+    let noiseFloor = Infinity;
 
     this.silenceTimer = setInterval(() => {
       analyser.getByteTimeDomainData(samples);
@@ -204,6 +220,11 @@ export class VoiceRecorder {
       }
       const rms = Math.sqrt(sumSquares / samples.length);
       totalTicks += 1;
+      noiseFloor = Math.min(noiseFloor, rms);
+      const threshold = Math.max(
+        Math.min(noiseFloor, MAX_NOISE_FLOOR) * SPEECH_OVER_NOISE,
+        minThreshold,
+      );
 
       if (rms >= threshold) {
         hasSpoken = true;
