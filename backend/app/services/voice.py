@@ -24,6 +24,8 @@ best-of-breed free services rather than one bundled provider.
 
 from __future__ import annotations
 
+import re
+
 import httpx
 
 from app.core.config import settings
@@ -32,6 +34,61 @@ from app.services.groq_llm import get_groq_client
 _STT_MODEL = "whisper-large-v3-turbo"
 _TTS_MODEL = "s2.1-pro-free"
 _TTS_URL = "https://api.fish.audio/v1/tts"
+
+# Fish Audio speaks markdown punctuation out loud and garbles the words around
+# it — confirmed by synthesizing a formatted reply and transcribing the audio
+# back: "used to **manage state**" was spoken as "used to asterisk asterisk
+# manage state asterisk asterisk manage state", repeating the phrase. The
+# voice prompt already asks the model for plain prose (see chat.py's
+# _VOICE_BREVITY_INSTRUCTION), but the model doesn't always comply, so the
+# text is flattened here before it can reach the synthesizer.
+_FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
+_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_LIST_BULLET = re.compile(r"^[ \t]*[-*+][ \t]+", re.MULTILINE)
+_HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]*", re.MULTILINE)
+_BLOCKQUOTE = re.compile(r"^[ \t]*>[ \t]?", re.MULTILINE)
+_EMPHASIS = re.compile(r"(\*{1,3}|_{2,3})")
+_TABLE_PIPE = re.compile(r"[ \t]*\|[ \t]*")
+# Pictographs, symbols, flags, dingbats — spoken aloud as their CLDR name
+# ("house building") in the middle of a sentence.
+_EMOJI = re.compile(
+    "[\U0001f000-\U0001faff\U00002190-\U000021ff\U00002300-\U000027bf\U00002b00-\U00002bff️]"
+)
+
+
+def to_speakable_text(text: str) -> str:
+    """Flatten a written reply into something a TTS engine reads cleanly.
+
+    List items become their own sentences rather than running together, so
+    the synthesized speech still pauses where the bullets were.
+    """
+    cleaned = _FENCED_CODE.sub(" ", text)
+    cleaned = _IMAGE.sub(r"\1", cleaned)
+    cleaned = _LINK.sub(r"\1", cleaned)
+    cleaned = _HEADING.sub("", cleaned)
+    cleaned = _BLOCKQUOTE.sub("", cleaned)
+    cleaned = _TABLE_PIPE.sub(", ", cleaned)
+
+    # Give each bullet a sentence ending before the marker disappears,
+    # otherwise "…reducer function It returns…" runs on as one breath.
+    lines = []
+    for line in _LIST_BULLET.sub("", cleaned).splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped[-1] not in ".!?,:;":
+            stripped += "."
+        lines.append(stripped)
+    cleaned = " ".join(lines)
+
+    cleaned = cleaned.replace("`", "")
+    cleaned = _EMPHASIS.sub("", cleaned)
+    cleaned = _EMOJI.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Never hand back an empty string (a reply that was nothing but a code
+    # block) — the caller would synthesize silence.
+    return cleaned or text.strip()
 
 
 class VoiceUnavailableError(Exception):
@@ -63,7 +120,7 @@ async def synthesize_speech(text: str, voice: str | None) -> bytes:
     ~20ms/char, so an untruncated text-chat-length reply (thousands of
     chars) can take a minute or more to speak.
     """
-    payload: dict = {"text": text[:600]}
+    payload: dict = {"text": to_speakable_text(text)[:600]}
     if voice:
         payload["reference_id"] = voice
     try:

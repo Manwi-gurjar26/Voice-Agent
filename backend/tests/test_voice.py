@@ -331,3 +331,77 @@ async def test_preflight_for_voice_messages_route_reflects_origin(client):
     )
     assert response.status_code == 204
     assert response.headers["Access-Control-Allow-Origin"] == "https://anything.example.com"
+
+
+# --------------------------------------------------------------------------
+# Speakable-text flattening
+#
+# Fish Audio reads markdown punctuation aloud and garbles the surrounding
+# words — confirmed against the real API by synthesizing a formatted reply
+# and transcribing the audio back, which returned "used to asterisk asterisk
+# manage state asterisk asterisk manage state", repeating the phrase.
+# --------------------------------------------------------------------------
+def test_emphasis_and_code_markers_are_not_spoken():
+    spoken = voice.to_speakable_text("It is used to **manage state** via `useReducer`.")
+    assert spoken == "It is used to manage state via useReducer."
+
+
+def test_bullets_become_separate_sentences_so_speech_pauses():
+    spoken = voice.to_speakable_text("You can apply for:\n\n* Home Loan\n* Personal Loan")
+    assert spoken == "You can apply for: Home Loan. Personal Loan."
+
+
+def test_emoji_are_dropped_rather_than_read_out_by_name():
+    spoken = voice.to_speakable_text("* \U0001f3e0 **Home Loan**\n* \U0001f4b3 **Personal Loan**")
+    assert spoken == "Home Loan. Personal Loan."
+
+
+def test_code_blocks_and_headings_are_removed():
+    spoken = voice.to_speakable_text(
+        "## EMI Calculator\n\nUse it:\n\n```python\nemi = p * r\n```\n\nIt shows the payment."
+    )
+    assert spoken == "EMI Calculator. Use it: It shows the payment."
+
+
+def test_links_keep_their_text_and_drop_the_url():
+    spoken = voice.to_speakable_text("See [the EMI calculator](https://example.com/emi) for details.")
+    assert spoken == "See the EMI calculator for details."
+
+
+def test_plain_prose_is_left_alone():
+    original = "You can apply for Home Loans, Personal Loans, and Business Loans."
+    assert voice.to_speakable_text(original) == original
+
+
+def test_a_reply_that_is_only_a_code_block_still_synthesizes_something():
+    # Better to read the code aloud than to hand the synthesizer an empty
+    # string and play the visitor silence.
+    spoken = voice.to_speakable_text("```\nemi = p * r\n```")
+    assert spoken
+
+
+async def test_synthesis_sends_the_flattened_text_not_the_raw_markdown(monkeypatch):
+    captured: dict = {}
+
+    class FakeResponse:
+        content = b"audio"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, _url, **kwargs):
+            captured.update(kwargs["json"])
+            return FakeResponse()
+
+    monkeypatch.setattr(voice.httpx, "AsyncClient", lambda **_kw: FakeClient())
+
+    await voice.synthesize_speech("Use **bold** and `code`.", None)
+
+    assert captured["text"] == "Use bold and code."
