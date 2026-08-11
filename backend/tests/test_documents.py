@@ -588,7 +588,17 @@ async def test_crawl_request_caps_limit_at_max_crawl_pages(client, monkeypatch):
 
             requested_limits.append(_json.loads(request.content)["limit"])
             return httpx.Response(200, json={"success": True, "id": "job123"})
-        return httpx.Response(200, json={"status": "completed", "data": []})
+        # One page, not zero: an empty crawl now falls back to scraping the
+        # start URL, which isn't what this test is about.
+        return httpx.Response(
+            200,
+            json={
+                "status": "completed",
+                "data": [
+                    {"markdown": "Content.", "metadata": {"title": "P", "url": "https://example.com/"}}
+                ],
+            },
+        )
 
     monkeypatch.setattr(
         firecrawl, "_build_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -695,3 +705,74 @@ async def test_member_cannot_start_a_crawl(client, db_session):
         headers=bearer(member_tokens),
     )
     assert response.status_code == 403
+
+
+# --------------------------------------------------------------------------
+# Empty-crawl fallback
+#
+# Firecrawl only follows links *below* the start path and does not include the
+# start page itself, so crawling a deep link ("…/features/") completes with
+# zero pages — confirmed live, where that URL crawled to 0 pages while
+# scraping the same URL returned ~12k characters. Silently creating an empty
+# knowledge base there looks like a successful import but leaves the agent
+# knowing nothing about the site.
+# --------------------------------------------------------------------------
+def _install_crawl_then_scrape(monkeypatch, *, scrape_markdown: str | None):
+    """Crawl completes with no pages; scrape returns `scrape_markdown`."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path.endswith("/scrape"):
+            data = {"metadata": {"title": "Features", "url": "https://example.com/features/"}}
+            if scrape_markdown is not None:
+                data["markdown"] = scrape_markdown
+            return httpx.Response(200, json={"success": True, "data": data})
+        if request.method == "POST":
+            return httpx.Response(200, json={"success": True, "id": "job123"})
+        return httpx.Response(200, json={"status": "completed", "data": []})
+
+    monkeypatch.setattr(
+        firecrawl, "_build_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(settings, "crawl_poll_interval_seconds", 0.0)
+    return seen
+
+
+async def test_empty_crawl_falls_back_to_scraping_the_start_page(client, monkeypatch):
+    seen = _install_crawl_then_scrape(monkeypatch, scrape_markdown="The real page content.")
+
+    tokens = await register(client)
+    agent_id = await make_agent_id(client, tokens)
+    response = await client.post(
+        f"{PREFIX}/agents/{agent_id}/documents/crawl",
+        json={"url": "https://example.com/features/"},
+        headers=bearer(tokens),
+    )
+
+    assert response.status_code == 201, response.text
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["title"] == "Features"
+    assert items[0]["status"] == "ready"
+    assert any("/scrape" in url for url in seen)
+
+
+async def test_a_crawl_that_finds_nothing_at_all_is_an_error_not_an_empty_import(
+    client, monkeypatch
+):
+    _install_crawl_then_scrape(monkeypatch, scrape_markdown=None)
+
+    tokens = await register(client)
+    agent_id = await make_agent_id(client, tokens)
+    response = await client.post(
+        f"{PREFIX}/agents/{agent_id}/documents/crawl",
+        json={"url": "https://example.com/nothing-here"},
+        headers=bearer(tokens),
+    )
+
+    assert response.status_code == 502
+    body = response.json()["error"]
+    assert body["code"] == "crawl_failed"
+    # The message has to tell the customer what to actually do about it.
+    assert "home page" in body["message"]

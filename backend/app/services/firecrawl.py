@@ -59,6 +59,35 @@ def _build_http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=30.0)
 
 
+async def scrape_page(url: str) -> CrawledPage | None:
+    """Scrape exactly one page. Returns None if it yields no text."""
+    async with _build_http_client() as client:
+        try:
+            response = await client.post(
+                f"{_BASE_URL}/scrape",
+                headers=_headers(),
+                json={
+                    "url": url,
+                    "formats": ["markdown"],
+                    "waitFor": settings.crawl_wait_for_ms,
+                },
+            )
+            response.raise_for_status()
+            data = response.json().get("data") or {}
+        except Exception as exc:
+            raise CrawlError(f"Could not fetch {url}: {exc}") from exc
+
+    markdown = data.get("markdown") or ""
+    if not markdown.strip():
+        return None
+    metadata = data.get("metadata") or {}
+    return CrawledPage(
+        url=metadata.get("url") or metadata.get("sourceURL") or url,
+        title=metadata.get("title"),
+        markdown=markdown,
+    )
+
+
 async def crawl_site(url: str, limit: int) -> list[CrawledPage]:
     """Starts a Firecrawl job for `url` (capped at `limit` pages) and polls
     until it completes, returning one CrawledPage per discovered page.
@@ -68,7 +97,28 @@ async def crawl_site(url: str, limit: int) -> list[CrawledPage]:
     a React/Vue SPA, etc.) yields only its loading shell, not real content.
     `excludePaths` skips non-content system files a crawler would otherwise
     discover and scrape as if they were pages.
+
+    A crawl started from a deep link ("…/features/") commonly finds nothing at
+    all: Firecrawl only follows links *below* the start path, and does not
+    include the start page itself — confirmed live, where that URL crawled to
+    0 pages while scraping the very same URL returned 12k characters. Rather
+    than hand back an empty knowledge base that still looks like a successful
+    import, the start page is fetched directly in that case.
     """
+    pages = await _run_crawl_job(url, limit)
+    if pages:
+        return pages
+
+    single = await scrape_page(url)
+    if single is not None:
+        return [single]
+    raise CrawlError(
+        f"Found no readable pages at {url}. Check the address, or try the "
+        f"site's home page instead of a link to one section."
+    )
+
+
+async def _run_crawl_job(url: str, limit: int) -> list[CrawledPage]:
     async with _build_http_client() as client:
         try:
             start = await client.post(
