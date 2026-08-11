@@ -4,6 +4,7 @@ import base64
 
 from app.core.config import settings
 from app.services import groq_llm, voice
+from tests.groq_fakes import FakeGroqClient, install_fake_groq_client
 from tests.test_auth import register
 from tests.test_chat import make_widget_session, session_auth
 from tests.test_public import make_active_agent
@@ -38,58 +39,6 @@ def install_fake_voice_client(
 
     monkeypatch.setattr(voice, "transcribe_audio", fake_transcribe)
     monkeypatch.setattr(voice, "synthesize_speech", fake_synthesize)
-
-
-class _FakeGroqMessage:
-    def __init__(self, content: str) -> None:
-        self.content = content
-
-
-class _FakeGroqChoice:
-    def __init__(self, content: str) -> None:
-        self.message = _FakeGroqMessage(content)
-
-
-class _FakeGroqUsage:
-    def __init__(self, prompt_tokens: int = 10, completion_tokens: int = 5) -> None:
-        self.prompt_tokens = prompt_tokens
-        self.completion_tokens = completion_tokens
-
-
-class _FakeGroqResponse:
-    def __init__(self, content: str) -> None:
-        self.choices = [_FakeGroqChoice(content)]
-        self.usage = _FakeGroqUsage()
-
-
-class _FakeGroqCompletions:
-    def __init__(self, reply: str | Exception) -> None:
-        self._reply = reply
-        self.last_kwargs: dict | None = None
-
-    async def create(self, **kwargs) -> _FakeGroqResponse:
-        self.last_kwargs = kwargs
-        if isinstance(self._reply, Exception):
-            raise self._reply
-        return _FakeGroqResponse(self._reply)
-
-
-class _FakeGroqChat:
-    def __init__(self, completions: _FakeGroqCompletions) -> None:
-        self.completions = completions
-
-
-class FakeGroqClient:
-    def __init__(self, reply: str | Exception) -> None:
-        self.chat = _FakeGroqChat(_FakeGroqCompletions(reply))
-
-
-def install_fake_groq_client(monkeypatch, reply: str | Exception = "We're open 9 to 5.") -> FakeGroqClient:
-    """Patch app.services.groq_llm.get_groq_client for the duration of a
-    test. Returns the fake client so tests can inspect what was requested."""
-    fake_client = FakeGroqClient(reply)
-    monkeypatch.setattr(groq_llm, "get_groq_client", lambda: fake_client)
-    return fake_client
 
 
 async def make_voice_conversation(client, session) -> str:

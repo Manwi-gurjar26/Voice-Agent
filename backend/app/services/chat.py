@@ -245,6 +245,32 @@ async def _prepare_turn(
     return system_prompt, gemini_contents, history, relevant_chunks
 
 
+async def _stream_groq_fallback(
+    system_prompt: str, history: list[Message], agent: Agent
+) -> AsyncIterator[str]:
+    """Answer with Groq when Gemini won't.
+
+    Gemini's free tier allows only 20 generate-content requests per day per
+    model (confirmed from the live 429: quotaId
+    GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue 20), after
+    which every typed message fails for the rest of the day — the chatbot
+    simply stops answering on a visitor's site. Groq already powers the voice
+    replies on a far larger free allowance, so it stands in rather than
+    letting the widget show an error.
+    """
+    client = groq_llm.get_groq_client()
+    stream = await client.chat.completions.create(
+        model=GROQ_VOICE_MODEL,
+        messages=_build_groq_messages(system_prompt, history),
+        max_tokens=agent.max_output_tokens,
+        stream=True,
+    )
+    async for chunk in stream:
+        text = chunk.choices[0].delta.content if chunk.choices else None
+        if text:
+            yield text
+
+
 async def stream_turn(
     db: AsyncSession, conversation: Conversation, agent: Agent, user_content: str
 ) -> AsyncIterator[str]:
@@ -254,7 +280,7 @@ async def stream_turn(
     directly to `StreamingResponse(..., media_type="text/event-stream")`.
     """
     try:
-        system_prompt, gemini_contents, _history, relevant_chunks = await _prepare_turn(
+        system_prompt, gemini_contents, history, relevant_chunks = await _prepare_turn(
             db, conversation, agent, user_content
         )
     except QuotaExceededError as exc:
@@ -277,14 +303,31 @@ async def stream_turn(
             final_chunk = chunk
     except Exception:
         logger.exception("Gemini call failed for conversation %s", conversation.id)
-        yield _sse(
-            "error",
-            {
-                "code": "llm_error",
-                "message": "The assistant is temporarily unavailable. Please try again.",
-            },
-        )
-        return
+        # Anything already streamed would be duplicated by a retry, so only a
+        # turn that produced nothing can fall back.
+        if accumulated:
+            yield _sse(
+                "error",
+                {
+                    "code": "llm_error",
+                    "message": "The assistant is temporarily unavailable. Please try again.",
+                },
+            )
+            return
+        try:
+            async for text in _stream_groq_fallback(system_prompt, history, agent):
+                accumulated += text
+                yield _sse("delta", {"text": text})
+        except Exception:
+            logger.exception("Groq fallback also failed for conversation %s", conversation.id)
+            yield _sse(
+                "error",
+                {
+                    "code": "llm_error",
+                    "message": "The assistant is temporarily unavailable. Please try again.",
+                },
+            )
+            return
 
     usage = final_chunk.usage_metadata if final_chunk is not None else None
     input_tokens = usage.prompt_token_count if usage else 0

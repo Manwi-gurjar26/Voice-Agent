@@ -11,6 +11,7 @@ from app.models import Conversation, Message, Tenant
 from app.services import llm
 from tests.test_auth import bearer, register
 from tests.test_public import ORIGIN, make_active_agent
+from tests.groq_fakes import install_fake_groq_client
 
 PREFIX = settings.api_v1_prefix
 
@@ -360,6 +361,8 @@ async def test_gemini_error_surfaces_as_an_sse_error_event_not_a_500(client, mon
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
     install_fake_client(monkeypatch, chunks=(), error=RuntimeError("boom"))
+    # Both providers down: Gemini alone failing now falls back to Groq.
+    install_fake_groq_client(monkeypatch, reply=RuntimeError("groq down too"))
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -384,6 +387,7 @@ async def test_a_failed_turn_still_persists_the_user_message(client, monkeypatch
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
     install_fake_client(monkeypatch, chunks=(), error=RuntimeError("boom"))
+    install_fake_groq_client(monkeypatch, reply=RuntimeError("groq down too"))
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -408,6 +412,7 @@ async def test_a_failed_turn_still_leaves_alternating_history_for_the_next_messa
     tokens = await register(client)
     _agent, session = await make_widget_session(client, tokens)
     install_fake_client(monkeypatch, chunks=(), error=RuntimeError("boom"))
+    install_fake_groq_client(monkeypatch, reply=RuntimeError("groq down too"))
 
     conv = (
         await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
@@ -909,3 +914,77 @@ async def test_irrelevant_question_below_similarity_threshold_gets_no_citations(
 
     done = next(data for event, data in parse_sse(response.text) if event == "done")
     assert done["citations"] == []
+
+
+# --------------------------------------------------------------------------
+# Gemini -> Groq fallback
+#
+# Gemini's free tier allows only 20 generate-content requests per day per
+# model (confirmed from a live 429: quotaId
+# GenerateRequestsPerDayPerProjectPerModel-FreeTier, quotaValue 20). Without a
+# fallback, a site's chatbot simply stops answering for the rest of the day.
+# --------------------------------------------------------------------------
+async def test_typed_chat_falls_back_to_groq_when_gemini_is_rate_limited(client, monkeypatch):
+    tokens = await register(client)
+    _agent, session = await make_widget_session(client, tokens)
+    install_fake_client(monkeypatch, chunks=(), error=RuntimeError("429 RESOURCE_EXHAUSTED"))
+    install_fake_groq_client(monkeypatch, reply="We are open 9 to 5.")
+
+    conv = (
+        await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
+    ).json()
+    response = await client.post(
+        f"{PREFIX}/public/conversations/{conv['id']}/messages",
+        json={"content": "what are your hours?"},
+        headers=session_auth(session),
+    )
+
+    assert response.status_code == 200
+    events = parse_sse(response.text)
+    kinds = [name for name, _ in events]
+    assert "error" not in kinds
+    assert kinds[-1] == "done"
+    spoken = "".join(payload["text"] for name, payload in events if name == "delta")
+    assert "open 9 to 5" in spoken
+
+
+async def test_the_fallback_reply_is_persisted_like_any_other(client, monkeypatch, db_session):
+    tokens = await register(client)
+    _agent, session = await make_widget_session(client, tokens)
+    install_fake_client(monkeypatch, chunks=(), error=RuntimeError("429 RESOURCE_EXHAUSTED"))
+    install_fake_groq_client(monkeypatch, reply="Fallback answer.")
+
+    conv = (
+        await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
+    ).json()
+    await client.post(
+        f"{PREFIX}/public/conversations/{conv['id']}/messages",
+        json={"content": "hi"},
+        headers=session_auth(session),
+    )
+
+    rows = list(await db_session.scalars(select(Message).order_by(Message.created_at)))
+    assert [r.role for r in rows] == ["user", "assistant"]
+    assert "Fallback answer." in rows[1].content
+
+
+async def test_a_partly_streamed_gemini_reply_does_not_restart_on_groq(client, monkeypatch):
+    """Text already sent to the browser can't be un-sent — retrying would
+    show the visitor the beginning of the answer twice."""
+    tokens = await register(client)
+    _agent, session = await make_widget_session(client, tokens)
+    install_fake_client(monkeypatch, chunks=("Half an answer",), error=RuntimeError("died midway"))
+    install_fake_groq_client(monkeypatch, reply="A completely different answer.")
+
+    conv = (
+        await client.post(f"{PREFIX}/public/conversations", headers=session_auth(session))
+    ).json()
+    response = await client.post(
+        f"{PREFIX}/public/conversations/{conv['id']}/messages",
+        json={"content": "hi"},
+        headers=session_auth(session),
+    )
+
+    events = parse_sse(response.text)
+    assert events[-1][0] == "error"
+    assert "completely different" not in response.text
