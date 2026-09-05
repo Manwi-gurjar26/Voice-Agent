@@ -1,0 +1,14 @@
+{
+  "name": "voice-agent-platform",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "docker compose up --build",
+    "start": "docker compose up --build",
+    "up": "docker compose up -d",
+    "down": "docker compose down",
+    "dev:dashboard": "npm --prefix dashboard run dev",
+    "dev:widget": "npm --prefix widget run dev",
+    "build:widget": "npm --prefix widget run build"
+  }
+}

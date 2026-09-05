@@ -63,7 +63,7 @@ services:
       # snippet silently fails to mount on their own site (see that
       # property's docstring).
       PUBLIC_BASE_URL: ${PUBLIC_ORIGIN:-http://localhost}
-      DASHBOARD_CORS_ORIGINS: ${PUBLIC_ORIGIN:-http://localhost}
+      DASHBOARD_CORS_ORIGINS: ${PUBLIC_ORIGIN:-http://localhost},http://localhost:3000,http://127.0.0.1:3000,http://127.0.0.1
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,6 +83,8 @@ services:
         # Must be a browser-reachable URL through nginx, never the
         # Docker-internal `backend` hostname — see Dockerfile's comment.
         NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_ORIGIN:-http://localhost}/api/v1
+    ports:
+      - "3000:3000"
     depends_on:
       backend:
         condition: service_healthy
