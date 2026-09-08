@@ -225,12 +225,29 @@ class Settings(BaseSettings):
     @field_validator("database_url")
     @classmethod
     def _require_async_driver(cls, value: str) -> str:
-        if not value.startswith("postgresql+asyncpg://"):
-            raise ValueError(
-                "DATABASE_URL must use the asyncpg driver, "
-                "e.g. postgresql+asyncpg://user:pass@host:5432/dbname"
-            )
-        return value
+        """Normalise a managed platform's connection string to the asyncpg driver.
+
+        Render, Heroku, and Railway all hand out a plain `postgresql://` URL
+        (and historically the legacy `postgres://`, which SQLAlchemy no
+        longer accepts at all). Rejecting those outright made render.yaml's
+        `fromDatabase` reference unusable — the container crashed on boot
+        with a config error before serving a single request, and the only
+        workaround was pasting a hand-edited URL that broke again whenever
+        the database was recreated.
+
+        Rewriting the scheme keeps the invariant that actually matters —
+        this app always talks to Postgres over asyncpg — without requiring
+        every deployment to fix up a URL its platform generated.
+        """
+        if value.startswith("postgresql+asyncpg://"):
+            return value
+        for prefix in ("postgresql://", "postgres://"):
+            if value.startswith(prefix):
+                return f"postgresql+asyncpg://{value[len(prefix):]}"
+        raise ValueError(
+            "DATABASE_URL must be a PostgreSQL URL, "
+            "e.g. postgresql+asyncpg://user:pass@host:5432/dbname"
+        )
 
     @model_validator(mode="after")
     def _guard_production(self) -> Settings:

@@ -49,4 +49,14 @@ EXPOSE 8000
 # --workers) — running several container replicas would need migrations
 # moved to a separate one-shot init step to avoid concurrent migration
 # races. Out of scope here; noted for when that's actually needed.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 4"]
+#
+# ${WEB_CONCURRENCY:-4}: 4 workers is right for a machine with room to spare
+# (docker-compose leaves this unset), but each worker that serves a chat or
+# an upload lazily loads its own copy of the sentence-transformers model and
+# CPU torch (app/services/embeddings.py) — roughly 400MB resident *per
+# worker*. On a 512MB instance (Render's free and starter plans) four of
+# those is a guaranteed OOM the moment anyone sends the first message, so
+# render.yaml sets this to 1. At one worker the in-memory rate limiter is
+# also exactly correct, which is why that deployment needs no Redis
+# (see app/services/rate_limit.py).
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers ${WEB_CONCURRENCY:-4}"]

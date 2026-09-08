@@ -65,9 +65,30 @@ def test_sync_url_strips_the_async_driver_for_alembic():
     assert make_settings().sync_database_url == "postgresql://u:p@localhost:5432/db"
 
 
-def test_a_sync_database_url_is_rejected():
-    with pytest.raises(ValidationError, match="asyncpg"):
-        make_settings(database_url="postgresql://u:p@localhost:5432/db")
+def test_a_managed_platform_url_is_normalised_to_asyncpg():
+    """Render/Heroku/Railway hand out a plain `postgresql://` URL. Rejecting
+    it outright meant render.yaml's `fromDatabase` could never be used --
+    the container crashed on boot, before serving a single request."""
+    s = make_settings(database_url="postgresql://u:p@host:5432/db")
+    assert s.database_url == "postgresql+asyncpg://u:p@host:5432/db"
+
+
+def test_the_legacy_postgres_scheme_is_normalised_too():
+    """SQLAlchemy removed `postgres://` support entirely, so passing this
+    through unchanged would fail later at engine creation with a much less
+    obvious message than a rejection here."""
+    s = make_settings(database_url="postgres://u:p@host:5432/db")
+    assert s.database_url == "postgresql+asyncpg://u:p@host:5432/db"
+
+
+def test_an_already_async_url_is_left_alone():
+    s = make_settings(database_url="postgresql+asyncpg://u:p@host:5432/db")
+    assert s.database_url == "postgresql+asyncpg://u:p@host:5432/db"
+
+
+def test_a_non_postgres_database_url_is_rejected():
+    with pytest.raises(ValidationError, match="PostgreSQL"):
+        make_settings(database_url="mysql://u:p@host:3306/db")
 
 
 def test_production_rejects_debug_mode():

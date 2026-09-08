@@ -17,6 +17,9 @@ venv/
 .ruff_cache/
 *.egg-info/
 backend/.voice_models/
+# Built by backend/Dockerfile's widget-build stage; also written locally
+# when serving the widget from the backend during tunnel testing.
+backend/static/
 
 # Node
 node_modules/
@@ -26,6 +29,10 @@ build/
 *.tsbuildinfo
 vite.config.*.timestamp-*.mjs
 vitest.config.*.timestamp-*.mjs
+
+# Machine-specific compose overrides (port remaps for what's already
+# running on this host) — never the same on two machines.
+docker-compose.override.yml
 
 # Editors / OS
 .vscode/

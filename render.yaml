@@ -1,64 +1,60 @@
-# Render Blueprint — a free, always-on(-ish) cloud deployment, as an
-# alternative to the local-only docker-compose.yml stack.
+# Render Blueprint — deploys this whole stack (backend + dashboard + Postgres)
+# with real HTTPS URLs, as an alternative to the local-only
+# docker-compose.yml stack.
 #
-# UNLIKE EVERYTHING ELSE IN THIS REPO, THIS FILE IS NOT LIVE-VERIFIED. Every
-# other piece of infrastructure here (docker-compose, the CI workflow, the
-# Gemini/Groq/Fish Audio/Firecrawl integrations) was actually run and
-# checked against real behavior before being trusted — that was not
-# possible here, since standing this up needs a Render account this
-# environment doesn't have access to. Read it as "believed correct from the
-# documented Blueprint spec," not "confirmed." The two spots most likely to
-# need a manual fix on first deploy are called out inline below.
+# WHY THIS EXISTS: the widget's embed snippet is generated server-side from
+# PUBLIC_BASE_URL / WIDGET_CDN_URL (see AgentRead.embed_snippet in
+# app/schemas/agent.py). Those must be an address a *visitor's* browser can
+# reach. Running only locally, they default to 127.0.0.1 — which resolves to
+# the visitor's own machine — so the widget works on the developer's own
+# localhost pages and is silently dead on every real site. A public HTTPS
+# origin is the fix, and that is what this file provisions.
 #
-# What's deliberately different from docker-compose.yml: there is no nginx
-# here. Render gives each web service its own HTTPS URL directly, so the
-# backend and dashboard end up on two different origins instead of one
-# unified by a reverse proxy — the backend now serves /widget.js itself
-# (see app/api/widget_static.py) precisely because there's no nginx left to
-# do it.
+# What's deliberately different from docker-compose.yml: there is no nginx.
+# Render gives each web service its own HTTPS URL directly, so the backend
+# and dashboard end up on two different origins rather than one unified by a
+# reverse proxy — the backend serves /widget.js itself (app/api/widget_static.py,
+# baked in by backend/Dockerfile's widget-build stage) precisely because
+# there is no nginx here to do it.
 #
 # Setup (one-time, in the Render dashboard):
 #   1. New -> Blueprint -> connect this GitHub repo. Render reads this file
 #      and creates every service below.
-#   2. Free Postgres has an expiry window (historically 30-90 days
-#      depending on when you're reading this — check Render's current
-#      pricing page). Fine for testing with a handful of free users; revisit
-#      before relying on this for anything real.
-#   3. Free web services spin down after ~15 minutes with no traffic and
-#      take a beat to wake back up on the next request — the tradeoff of
-#      $0/month here, not a bug in this config.
-#   4. Set the `sync: false` secrets below in the dashboard yourself (Render
-#      deliberately never stores real secrets in a file that lives in your
-#      repo) — same values as your local backend/.env.
-#   5. If either onrender.com hostname below collides with someone else's
-#      existing service (they're globally unique), Render will give you a
-#      different one — update PUBLIC_BASE_URL/WIDGET_CDN_URL/
-#      DASHBOARD_BASE_URL/DASHBOARD_CORS_ORIGINS and the dashboard's build
-#      arg to match, then redeploy both services.
+#   2. Fill in the `sync: false` secrets when prompted — same values as your
+#      local backend/.env. Render deliberately never stores real secrets in
+#      a file that lives in your repo.
+#   3. Free Postgres expires after a limited window (check Render's current
+#      pricing page). Fine for testing; revisit before relying on it.
+#   4. Free web services spin down after ~15 minutes idle and take a beat to
+#      wake on the next request — the tradeoff of $0/month, not a bug.
+#   5. Service names below are GLOBALLY UNIQUE across all of Render. If one
+#      is already taken, Render assigns a different hostname — then update
+#      PUBLIC_BASE_URL, WIDGET_CDN_URL, DASHBOARD_BASE_URL,
+#      DASHBOARD_CORS_ORIGINS and NEXT_PUBLIC_API_BASE_URL below to match the
+#      real URLs and redeploy both services.
 
 databases:
-  - name: voiceagent-db
+  - name: voice-agent-mg-db
     databaseName: voiceagent
     user: voiceagent
     plan: free
 
-services:
-  # Not yet confirmed which Blueprint `type` Render currently expects for a
-  # managed Redis-compatible store — "redis" is what the spec has
-  # documented historically; Render has also offered this under a "Key
-  # Value" product name at times. If the blueprint apply step rejects this
-  # service, create it manually from Render's dashboard instead (New ->
-  # Redis/Key Value, free plan) and paste its connection string into the
-  # backend's REDIS_URL env var yourself.
-  - type: redis
-    name: voiceagent-redis
-    plan: free
-    ipAllowList: [] # no external access needed — only voiceagent-backend reads this
+# No Redis service here, deliberately. Redis is used by exactly one module
+# (app/services/rate_limit.py) and only when REDIS_URL is set; without it the
+# limiter falls back to in-memory state, which that module's own docstring
+# notes is correct for a *single* uvicorn process. WEB_CONCURRENCY below
+# pins this deployment to one worker, so the in-memory path is not a
+# degradation here — it is the correct backend. Add a Key Value/Redis
+# instance from Render's dashboard and set REDIS_URL if you ever raise
+# WEB_CONCURRENCY above 1.
 
+services:
   - type: web
-    name: voiceagent-backend
+    name: voice-agent-mg-backend
     runtime: docker
     dockerfilePath: backend/Dockerfile
+    # Repo root, not backend/ — backend/Dockerfile's first stage builds the
+    # widget from widget/, so it needs to see the whole repo.
     dockerContext: .
     plan: free
     healthCheckPath: /api/v1/health
@@ -67,33 +63,42 @@ services:
         value: production
       - key: DEBUG
         value: "false"
+      # Render terminates TLS in front of this container, so the real client
+      # IP arrives in X-Forwarded-For. Without this, every visitor looks
+      # like the proxy and they all share one rate-limit bucket.
       - key: TRUST_PROXY_HEADERS
         value: "true"
+      # One worker, not the Dockerfile's default of 4. Each worker that
+      # serves a chat or an upload lazily loads its own copy of the
+      # sentence-transformers model plus CPU torch (~400MB resident). Four
+      # of those on a 512MB free/starter instance is a guaranteed OOM on the
+      # first message. Raise this only alongside a bigger plan AND a
+      # REDIS_URL (see the note above the services block).
+      - key: WEB_CONCURRENCY
+        value: "1"
       - key: SECRET_KEY
         generateValue: true
+      # Render hands out a plain `postgresql://` URL; app/core/config.py
+      # normalises it to the asyncpg driver this app requires.
       - key: DATABASE_URL
         fromDatabase:
-          name: voiceagent-db
+          name: voice-agent-mg-db
           property: connectionString
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: voiceagent-redis
-          property: connectionString
-      # Render URLs are deterministic from the service `name` above
-      # (https://{name}.onrender.com) — see setup step 5 if either name was
-      # already taken and Render assigned something else instead.
+      # The three URLs that make the embed snippet work on a real site.
+      # These must be this backend's own public origin — see setup step 5 if
+      # Render assigned a different hostname.
       - key: PUBLIC_BASE_URL
-        value: https://voiceagent-backend.onrender.com
+        value: https://voice-agent-mg-backend.onrender.com
       - key: WIDGET_CDN_URL
-        value: https://voiceagent-backend.onrender.com/widget.js
+        value: https://voice-agent-mg-backend.onrender.com/widget.js
       - key: DASHBOARD_BASE_URL
-        value: https://voiceagent-dashboard.onrender.com
+        value: https://voice-agent-mg-dashboard.onrender.com
+      # Lets the dashboard's browser-side calls reach this API. Distinct
+      # from the per-agent widget allowlist, which lives in the database.
       - key: DASHBOARD_CORS_ORIGINS
-        value: https://voiceagent-dashboard.onrender.com
-      # Voice + RAG + crawling — same free-tier keys as your local
-      # backend/.env. Leave any of these blank to run without that feature,
-      # same as locally.
+        value: https://voice-agent-mg-dashboard.onrender.com
+      # Same free-tier keys as your local backend/.env. Leave any blank to
+      # run without that feature, exactly as locally.
       - key: GEMINI_API_KEY
         sync: false
       - key: GROQ_API_KEY
@@ -102,35 +107,25 @@ services:
         sync: false
       - key: FIRECRAWL_API_KEY
         sync: false
-      # Billing (Step 9) is explicitly paused for this platform right now —
-      # leave these blank; the billing routes just won't be reachable
-      # without them, same as an unconfigured Dodo account locally.
-      - key: DODO_API_KEY
+      - key: RESEND_API_KEY
         sync: false
-      - key: DODO_WEBHOOK_KEY
-        sync: false
-      - key: DODO_PRODUCT_ID_STARTER
-        sync: false
-      - key: DODO_PRODUCT_ID_PRO
-        sync: false
-      - key: DODO_PRODUCT_ID_ENTERPRISE
-        sync: false
+      # Billing (Dodo) is paused for this platform — every DODO_* setting is
+      # optional in app/core/config.py, and the billing routes simply are not
+      # reachable without them. Add them from Render's Environment tab if you
+      # turn billing back on.
 
   - type: web
-    name: voiceagent-dashboard
+    name: voice-agent-mg-dashboard
     runtime: docker
     dockerfilePath: dashboard/Dockerfile
     dockerContext: dashboard
     plan: free
     envVars:
-      # NEXT_PUBLIC_API_BASE_URL is a build ARG (baked into the client
-      # bundle at build time — see dashboard/Dockerfile's own comment on
-      # why this can't be a runtime env var), not an ordinary env var. Render
-      # blueprints are documented to pass envVars through as Docker build
-      # args for `runtime: docker` services, but that specific behavior is
-      # the least-verified part of this whole file (see the top-of-file
-      # note). If the dashboard deploys but calls the wrong backend URL,
-      # set this in the dashboard's Environment tab and trigger a manual
-      # redeploy — the fallback path, not a sign the whole approach is wrong.
+      # NEXT_PUBLIC_* is inlined into the client bundle at BUILD time (see
+      # dashboard/Dockerfile's ARG/ENV comment) — it is not read at startup.
+      # If the dashboard deploys but every API call fails, this did not reach
+      # the build: set it in this service's Environment tab and trigger a
+      # Manual Deploy. Its Dockerfile default is http://localhost/api/v1,
+      # which would fail in exactly that same silent way.
       - key: NEXT_PUBLIC_API_BASE_URL
-        value: https://voiceagent-backend.onrender.com/api/v1
+        value: https://voice-agent-mg-backend.onrender.com/api/v1
