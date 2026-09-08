@@ -1,15 +1,19 @@
 import type { AgentRead } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const STATUS_STYLE: Record<AgentRead["status"], { dot: string; chip: string }> = {
-  active: { dot: "bg-success", chip: "bg-success/10 text-success ring-success/20" },
-  draft: { dot: "bg-warning", chip: "bg-warning/10 text-warning ring-warning/20" },
-  disabled: { dot: "bg-muted-foreground", chip: "bg-muted text-muted-foreground ring-border" },
+const STATUS_STYLE: Record<AgentRead["status"], { dot: string; text: string }> = {
+  active: { dot: "bg-success", text: "text-success" },
+  draft: { dot: "bg-warning", text: "text-warning" },
+  disabled: { dot: "bg-fg-faint", text: "text-fg-faint" },
 };
 
-/** Status pill shared by the agent list and the agent detail header. The
- * status word is kept as its own text node so it reads as one label rather
- * than being split by the dot. */
+/** Status marker shared by the agent list, the agent detail header and the
+ * overview table.
+ *
+ * A dot plus a mono label rather than a filled pill: on a black ground a
+ * tinted capsule reads as a button, and there are already enough of those on
+ * an agent card. The status word stays its own text node so it reads (and
+ * tests) as one label rather than being split by the dot. */
 export function StatusChip({
   status,
   className,
@@ -21,8 +25,8 @@ export function StatusChip({
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset",
-        style.chip,
+        "mono-fig inline-flex shrink-0 items-center gap-1.5 text-[10px] tracking-wider uppercase",
+        style.text,
         className,
       )}
     >

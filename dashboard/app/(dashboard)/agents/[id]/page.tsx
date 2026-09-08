@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import { AlertCircle, ArrowLeft, Code2, Trash2 } from "lucide-react";
+import { AlertCircle, ArrowLeft, Code2, MessagesSquare, Trash2 } from "lucide-react";
 import { deleteAgent, formatApiError, getAgent, updateAgent } from "@/lib/api";
 import type { AgentRead } from "@/lib/types";
 import {
@@ -91,8 +91,8 @@ export default function EditAgentPage() {
   if (!agent) {
     return (
       <div className="flex flex-col gap-5">
-        <div className="animate-shimmer h-28 rounded-2xl border" />
-        <div className="animate-shimmer h-40 rounded-2xl border" />
+        <div className="animate-shimmer h-28 rounded-lg border" />
+        <div className="animate-shimmer h-40 rounded-lg border" />
       </div>
     );
   }
@@ -107,49 +107,64 @@ export default function EditAgentPage() {
         All agents
       </Link>
 
-      <header className="bg-card/60 elev-2 sheen relative overflow-hidden rounded-2xl border p-6 backdrop-blur-sm">
-        <span aria-hidden="true" className="bg-brand-gradient absolute inset-x-0 top-0 h-1" />
+      <header className="border-rule relative overflow-hidden rounded-lg border p-6">
+        <span aria-hidden="true" className="bg-brand-gradient absolute inset-x-0 top-0 h-px" />
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-4">
-            <LogoMark size={44} className="elev-2 mt-0.5 rounded-xl" />
+            <LogoMark size={40} className="mt-0.5" />
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-3">
-                <h1 className="truncate text-2xl font-semibold tracking-tight">{agent.name}</h1>
+                <h1 className="display truncate text-2xl font-bold">{agent.name}</h1>
                 <StatusChip status={agent.status} />
               </div>
-              <p className="text-muted-foreground mt-1.5 font-mono text-xs break-all">
+              <p className="text-fg-faint mono-fig mt-1.5 text-xs break-all">
                 {agent.public_key}
               </p>
             </div>
           </div>
 
-          <AlertDialog>
-            <AlertDialogTrigger
-              render={<Button variant="outline" size="sm" className="text-destructive gap-1.5" />}
+          <div className="flex items-center gap-2">
+            <Button
+              render={<Link href="/playground" />}
+              nativeButton={false}
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
             >
-              <Trash2 className="size-3.5" aria-hidden="true" />
-              Delete agent
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete &quot;{agent.name}&quot;?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This permanently deletes the agent and its embed key. Any site still embedding
-                  it will stop working immediately. This cannot be undone.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
-                <AlertDialogAction disabled={deleting} onClick={() => void handleDelete()}>
-                  {deleting ? "Deleting…" : "Delete"}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+              <MessagesSquare className="size-3.5" aria-hidden="true" />
+              Try it
+            </Button>
+
+            <AlertDialog>
+              <AlertDialogTrigger
+                render={
+                  <Button variant="outline" size="sm" className="text-destructive gap-1.5" />
+                }
+              >
+                <Trash2 className="size-3.5" aria-hidden="true" />
+                Delete agent
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete &quot;{agent.name}&quot;?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This permanently deletes the agent and its embed key. Any site still
+                    embedding it will stop working immediately. This cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction disabled={deleting} onClick={() => void handleDelete()}>
+                    {deleting ? "Deleting…" : "Delete"}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         </div>
       </header>
 
-      <section className="bg-card/60 elev-1 overflow-hidden rounded-2xl border backdrop-blur-sm">
+      <section className="border-rule overflow-hidden rounded-lg border">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
           <div className="flex items-start gap-3">
             <span className="bg-primary/10 text-primary mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg">

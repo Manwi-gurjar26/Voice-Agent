@@ -44,7 +44,7 @@ describe("LoginPage", () => {
     await user.click(screen.getByRole("button", { name: /log in/i }));
 
     await waitFor(() => expect(login).toHaveBeenCalledWith({ email: "a@b.com", password: "hunter2hunter2" }));
-    await waitFor(() => expect(replace).toHaveBeenCalledWith("/agents"));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith("/overview"));
   });
 
   it("links to the forgot-password page", () => {

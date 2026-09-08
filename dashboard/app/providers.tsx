@@ -6,7 +6,11 @@ import { Toaster } from "@/components/ui/sonner";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+    /* forcedTheme, not defaultTheme: the palette is dark-only, so this exists
+       purely so the components that read useTheme() (sonner's Toaster) get a
+       correct answer instead of resolving `system` and rendering light toasts
+       on a black page. Nothing in the UI can change it. */
+    <ThemeProvider attribute="class" forcedTheme="dark" enableSystem={false}>
       <AuthProvider>
         {children}
         <Toaster />

@@ -35,7 +35,7 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       await login(values);
-      router.replace("/agents");
+      router.replace("/overview");
     } catch (err) {
       toast.error(formatApiError(err));
     } finally {
@@ -44,7 +44,7 @@ export default function LoginPage() {
   }
 
   return (
-    <Card className="glass-strong elev-3 sheen relative rounded-2xl py-6 ring-0">
+    <Card className="bg-card sheen relative rounded-lg border py-6 ring-0">
       <CardHeader className="gap-2">
         <h1 className="text-2xl font-semibold tracking-tight">Welcome back</h1>
         <p className="text-muted-foreground text-sm">Sign in to manage your agents.</p>
@@ -107,7 +107,7 @@ export default function LoginPage() {
           <Button
             type="submit"
             disabled={submitting}
-            className="bg-brand-gradient elev-2 group h-11 w-full border-0 text-white hover:opacity-95"
+            className="bg-primary text-primary-foreground hover:bg-primary/85 group h-11 w-full border-0"
           >
             {submitting ? "Logging in…" : "Log in"}
             {!submitting && (

@@ -1,13 +1,17 @@
 import { cn } from "@/lib/utils";
 
-/* A single fixed gradient id is safe here: every instance defines the same
-   stops, so duplicate ids across instances resolve identically. useId() would
-   force this to be a client component for no benefit. */
-const GRADIENT_ID = "va-brand-gradient";
-
 /** Waveform bar heights, centred — the "voice" half of the mark. */
-const BARS = [8, 14, 20, 14, 8];
+const BARS = [7, 13, 20, 13, 7];
 
+/**
+ * The mark: a hairline-ruled square holding a magenta equaliser.
+ *
+ * Deliberately not a gradient-filled rounded chip any more. On a true-black
+ * page a saturated filled tile is the loudest thing on screen and fights the
+ * headline for attention; an outlined square with a single accent inside
+ * sits in the same visual register as the rest of the chrome, which is what
+ * the reference does throughout.
+ */
 export function LogoMark({ size = 32, className }: { size?: number; className?: string }) {
   return (
     <svg
@@ -17,14 +21,15 @@ export function LogoMark({ size = 32, className }: { size?: number; className?: 
       className={cn("shrink-0", className)}
       aria-hidden="true"
     >
-      <defs>
-        <linearGradient id={GRADIENT_ID} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="var(--brand-1)" />
-          <stop offset="52%" stopColor="var(--brand-2)" />
-          <stop offset="100%" stopColor="var(--brand-3)" />
-        </linearGradient>
-      </defs>
-      <rect width="32" height="32" rx="9" fill={`url(#${GRADIENT_ID})`} />
+      <rect
+        x="0.5"
+        y="0.5"
+        width="31"
+        height="31"
+        rx="5.5"
+        fill="var(--ink-1)"
+        stroke="var(--rule-strong)"
+      />
       {BARS.map((h, i) => (
         <rect
           key={i}
@@ -33,19 +38,34 @@ export function LogoMark({ size = 32, className }: { size?: number; className?: 
           width="2.5"
           height={h}
           rx="1.25"
-          fill="white"
-          opacity={i === 2 ? 1 : 0.78}
+          fill="var(--magenta)"
+          // The centre bar at full strength, the outer pairs stepped back —
+          // the fade is what makes five rectangles read as a waveform.
+          opacity={i === 2 ? 1 : i === 1 || i === 3 ? 0.72 : 0.42}
         />
       ))}
     </svg>
   );
 }
 
-export function Wordmark({ className }: { className?: string }) {
+export function Wordmark({
+  className,
+  showMark = true,
+}: {
+  className?: string;
+  showMark?: boolean;
+}) {
   return (
     <span className={cn("flex items-center gap-2.5", className)}>
-      <LogoMark size={28} />
-      <span className="text-[0.95rem] font-semibold tracking-tight">Voice Agent</span>
+      {showMark && <LogoMark size={26} />}
+      <span className="text-[15px] font-bold tracking-tight">
+        Voice Agent
+        {/* The accent lives in one glyph. Cheaper than a coloured logotype
+            and it survives being rendered at 13px in a sidebar. */}
+        <span className="text-primary" aria-hidden="true">
+          .
+        </span>
+      </span>
     </span>
   );
 }

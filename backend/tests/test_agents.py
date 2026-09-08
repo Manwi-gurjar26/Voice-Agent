@@ -29,7 +29,7 @@ async def test_create_agent_applies_defaults_and_returns_an_embed_snippet(client
     assert agent["status"] == "draft"
     assert agent["model"] == settings.default_model
     assert agent["effort"] == "medium"
-    assert agent["theme"]["primaryColor"] == "#2F6FED"
+    assert agent["theme"]["primaryColor"] == "#F84FCC"
     assert agent["public_key"] in agent["embed_snippet"]
     assert agent["embed_snippet"].startswith("<script")
 

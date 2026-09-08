@@ -3,16 +3,17 @@
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Bot, CreditCard, LogOut } from "lucide-react";
+import { Bot, CreditCard, LayoutGrid, LogOut, MessagesSquare } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
-import { ThemeToggle } from "@/components/ui/theme-toggle";
-import { Aurora } from "@/components/visuals/aurora";
+import { Backdrop } from "@/components/visuals/backdrop";
 import { LogoMark, VoiceWave, Wordmark } from "@/components/visuals/brand";
 import { cn } from "@/lib/utils";
 
 const NAV = [
+  { href: "/overview", label: "Overview", Icon: LayoutGrid },
   { href: "/agents", label: "Agents", Icon: Bot },
+  { href: "/playground", label: "Playground", Icon: MessagesSquare },
   { href: "/billing", label: "Billing", Icon: CreditCard },
 ];
 
@@ -36,20 +37,20 @@ function NavLinks({ pathname, onNavigate }: { pathname: string; onNavigate?: () 
             onClick={onNavigate}
             aria-current={active ? "page" : undefined}
             className={cn(
-              "group relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors",
+              "group relative flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors",
               active
-                ? "bg-primary/10 text-foreground"
-                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                ? "bg-secondary text-foreground font-medium"
+                : "text-fg-dim hover:bg-secondary/60 hover:text-foreground",
             )}
           >
             {active && (
               <span
                 aria-hidden="true"
-                className="bg-brand-gradient absolute top-1/2 -left-3 h-5 w-1 -translate-y-1/2 rounded-r-full"
+                className="bg-primary absolute top-1/2 -left-2.5 h-4 w-0.5 -translate-y-1/2 rounded-r-full"
               />
             )}
             <Icon
-              className={cn("size-4.5 transition-colors", active && "text-primary")}
+              className={cn("size-4 transition-colors", active && "text-primary")}
               aria-hidden="true"
             />
             {label}
@@ -76,8 +77,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   if (status !== "authenticated") {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3">
-        <LogoMark size={40} className="animate-float" />
-        <p className="text-muted-foreground flex items-center gap-2 text-sm">
+        <LogoMark size={36} className="animate-float" />
+        <p className="text-fg-faint flex items-center gap-2 text-xs">
           <VoiceWave className="text-primary h-3" /> Loading your workspace…
         </p>
       </div>
@@ -86,46 +87,49 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="relative flex flex-1">
-      <Aurora />
+      {/* No bloom behind the dashboard: even a faint magenta wash tints the
+          chart fills, and these screens are read, not admired. */}
+      <Backdrop bloom={false} />
 
-      <aside className="glass sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-r lg:flex">
-        <div className="px-6 py-5">
-          <Link href="/agents" className="inline-flex">
+      <aside className="glass sticky top-0 hidden h-dvh w-60 shrink-0 flex-col border-r lg:flex">
+        <div className="flex h-14 items-center px-5">
+          <Link href="/overview" className="inline-flex">
             <Wordmark />
           </Link>
         </div>
 
-        <nav className="flex flex-1 flex-col gap-1 px-6" aria-label="Main">
+        <nav className="flex flex-1 flex-col gap-0.5 px-5 pt-3" aria-label="Main">
           <NavLinks pathname={pathname} />
         </nav>
 
         <div className="flex flex-col gap-3 border-t p-4">
           {tenant && (
-            <div className="bg-muted/50 flex items-center justify-between rounded-xl px-3 py-2">
-              <span className="min-w-0 truncate text-xs font-medium">{tenant.name}</span>
-              <span className="bg-primary/10 text-primary shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase">
+            <div className="border-rule flex items-center justify-between rounded-md border px-2.5 py-2">
+              <span className="min-w-0 truncate text-xs">{tenant.name}</span>
+              <span className="mono-fig text-primary shrink-0 text-[10px] tracking-wider uppercase">
                 {tenant.plan}
               </span>
             </div>
           )}
 
-          <div className="flex items-center gap-2.5 px-1">
+          <div className="flex items-center gap-2.5 px-0.5">
             <span
               aria-hidden="true"
-              className="bg-brand-gradient grid size-8 shrink-0 place-items-center rounded-full text-[11px] font-bold text-white"
+              className="border-rule-strong text-primary mono-fig grid size-7 shrink-0 place-items-center rounded-md border text-[10px] font-bold"
             >
               {initialsFrom(user?.email)}
             </span>
-            <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
+            <span className="text-fg-faint min-w-0 flex-1 truncate text-[11px]">
               {user?.email}
             </span>
-          </div>
-
-          <div className="flex items-center justify-between gap-2">
-            <ThemeToggle />
-            <Button variant="ghost" size="sm" onClick={() => void logout()} className="gap-1.5">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => void logout()}
+              aria-label="Log out"
+              className="text-fg-faint hover:text-foreground shrink-0"
+            >
               <LogOut className="size-3.5" aria-hidden="true" />
-              Log out
             </Button>
           </div>
         </div>
@@ -133,28 +137,26 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="glass sticky top-0 z-30 border-b lg:hidden">
-          <div className="flex items-center justify-between gap-3 px-4 py-3">
-            <Link href="/agents" className="inline-flex">
+          <div className="flex h-14 items-center justify-between gap-3 px-4">
+            <Link href="/overview" className="inline-flex">
               <Wordmark />
             </Link>
-            <div className="flex items-center gap-2">
-              <ThemeToggle />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void logout()}
-                aria-label="Log out"
-              >
-                <LogOut className="size-4" aria-hidden="true" />
-              </Button>
-            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void logout()}
+              aria-label="Log out"
+              className="text-fg-dim"
+            >
+              <LogOut className="size-4" aria-hidden="true" />
+            </Button>
           </div>
-          <nav className="flex gap-1 px-4 pb-3" aria-label="Main">
+          <nav className="flex gap-1 overflow-x-auto px-4 pb-2.5" aria-label="Main">
             <NavLinks pathname={pathname} />
           </nav>
         </header>
 
-        <main className="mx-auto w-full max-w-6xl flex-1 px-5 py-8 sm:px-8 lg:py-10">
+        <main className="mx-auto w-full max-w-[1280px] flex-1 px-5 py-8 sm:px-8 lg:py-10">
           {children}
         </main>
       </div>

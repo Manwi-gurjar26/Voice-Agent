@@ -56,7 +56,7 @@ function makeAgent(overrides: Partial<AgentRead> = {}): AgentRead {
     max_output_tokens: 2048,
     voice_enabled: false,
     voice_id: null,
-    theme: { primaryColor: "#2F6FED", position: "bottom-right" },
+    theme: { primaryColor: "#F84FCC", position: "bottom-right" },
     allowed_origins: ["https://example.com"],
     rate_limit_per_minute: 30,
     created_at: "2026-01-01T00:00:00Z",

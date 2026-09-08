@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
 from google.genai import types
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -75,6 +75,33 @@ _THINKING_BUDGET_BY_EFFORT: dict[EffortLevel, int] = {
 
 # This app stores "assistant"; Gemini's API expects "model".
 _GEMINI_ROLE = {"user": "user", "assistant": "model"}
+
+
+async def _touch_last_message_at(db: AsyncSession, conversation: Conversation) -> None:
+    """Stamp the conversation's last_message_at.
+
+    An explicit UPDATE rather than `conversation.last_message_at = ...`,
+    because the ORM assignment silently did nothing in production.
+
+    FastAPI exits `yield` dependencies *before* a StreamingResponse's body is
+    produced, so `get_db`'s `async with SessionFactory()` has already closed
+    the session by the time stream_turn's generator runs — and closing expunges
+    every instance. `conversation` is detached at that point, so mutating it is
+    a no-op at commit, while `db.add(assistant_message)` still works because it
+    explicitly re-adds a pending object. The result was messages persisting
+    correctly while last_message_at stayed NULL forever, on the public widget
+    path as well as the dashboard preview.
+
+    The tests missed it because their `get_db` override yields a long-lived
+    session that is never closed between the yield and the streamed body, so
+    the instance stays attached there. Writing by primary key is correct under
+    both lifecycles and does not depend on the instance's state.
+    """
+    await db.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation.id)
+        .values(last_message_at=datetime.now(timezone.utc))
+    )
 
 
 def _sse(event: str, data: dict) -> str:
@@ -227,7 +254,7 @@ async def _prepare_turn(
 
     user_message = Message(conversation_id=conversation.id, role="user", content=user_content)
     db.add(user_message)
-    conversation.last_message_at = datetime.now(timezone.utc)
+    await _touch_last_message_at(db, conversation)
     # Commit now, not just at end-of-request: the user's message and their
     # quota consumption must survive even if the Gemini call below fails.
     await db.commit()
@@ -375,7 +402,7 @@ async def stream_turn(
         citations=citations,
     )
     db.add(assistant_message)
-    conversation.last_message_at = datetime.now(timezone.utc)
+    await _touch_last_message_at(db, conversation)
     await db.commit()
 
     yield _sse(
@@ -441,6 +468,6 @@ async def complete_turn(
         citations=citations,
     )
     db.add(assistant_message)
-    conversation.last_message_at = datetime.now(timezone.utc)
+    await _touch_last_message_at(db, conversation)
     await db.commit()
     return assistant_message

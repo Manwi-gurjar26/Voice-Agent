@@ -33,6 +33,35 @@ function playToEnd(element: HTMLAudioElement): Promise<void> {
   });
 }
 
+/** Black or white, whichever is legible on `hex`.
+ *
+ * The stylesheet used to hard-code white on every primary-coloured surface.
+ * That is wrong for any light brand colour a customer picks — and the default
+ * accent is now a bright magenta, on which white text sits at roughly 2.4:1.
+ * Uses the WCAG relative-luminance formula rather than a naive average, since
+ * perceived brightness is dominated by the green channel.
+ *
+ * Falls back to white for any value this cannot parse (a named colour, an
+ * rgb() string), which is the previous behaviour and safe for the dark
+ * colours customers most often choose.
+ */
+export function readableOn(hex: string): string {
+  const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  // The group is guaranteed by the pattern, but noUncheckedIndexedAccess does
+  // not know that — checked rather than asserted with `!`.
+  const raw = match?.[1];
+  if (!raw) return "#fff";
+  const full = raw.length === 3 ? raw.replace(/./g, (c) => c + c) : raw;
+  const channel = (offset: number) => {
+    const value = parseInt(full.slice(offset, offset + 2), 16) / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
+  // Contrast against white is (1.05)/(L+0.05); against black it is
+  // (L+0.05)/0.05. They cross at L ≈ 0.179.
+  return luminance > 0.179 ? "#000" : "#fff";
+}
+
 export function App({ baseUrl, publicKey }: AppProps) {
   // Created once per mount, not per render — a fresh client every render
   // would be harmless functionally (it's stateless) but wasteful.
@@ -55,8 +84,10 @@ export function App({ baseUrl, publicKey }: AppProps) {
 
   const { name, theme, voice_enabled } = chat.config;
   const position = resolvePosition(theme.position);
+  const primary = theme.primaryColor || "#f84fcc";
   const rootStyle = {
-    "--va-primary": theme.primaryColor || "#2f6fed",
+    "--va-primary": primary,
+    "--va-on-primary": readableOn(primary),
     "--va-bubble-radius": `${theme.bubbleRadius ?? 16}px`,
   } as JSX.CSSProperties;
 

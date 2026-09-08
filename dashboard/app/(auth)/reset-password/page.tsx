@@ -60,7 +60,7 @@ function ResetPasswordForm() {
 
   if (!token) {
     return (
-      <Card className="glass-strong elev-3 sheen relative rounded-2xl py-6 ring-0">
+      <Card className="bg-card sheen relative rounded-lg border py-6 ring-0">
         <CardHeader className="gap-2">
           <h1 className="text-2xl font-semibold tracking-tight">Invalid link</h1>
           <p className="text-muted-foreground text-sm">
@@ -71,7 +71,7 @@ function ResetPasswordForm() {
           <Button
             render={<Link href="/forgot-password" />}
             nativeButton={false}
-            className="bg-brand-gradient elev-2 h-11 w-full border-0 text-white hover:opacity-95"
+            className="bg-primary text-primary-foreground hover:bg-primary/85 h-11 w-full border-0"
           >
             Request a new link
           </Button>
@@ -81,7 +81,7 @@ function ResetPasswordForm() {
   }
 
   return (
-    <Card className="glass-strong elev-3 sheen relative rounded-2xl py-6 ring-0">
+    <Card className="bg-card sheen relative rounded-lg border py-6 ring-0">
       <CardHeader className="gap-2">
         <h1 className="text-2xl font-semibold tracking-tight">Set a new password</h1>
         <p className="text-muted-foreground text-sm">Choose a new password for your account.</p>
@@ -116,7 +116,7 @@ function ResetPasswordForm() {
           <Button
             type="submit"
             disabled={submitting}
-            className="bg-brand-gradient elev-2 group h-11 w-full border-0 text-white hover:opacity-95"
+            className="bg-primary text-primary-foreground hover:bg-primary/85 group h-11 w-full border-0"
           >
             {submitting ? "Saving…" : "Reset password"}
             {!submitting && (

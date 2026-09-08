@@ -93,7 +93,7 @@ export function KnowledgeBase({ agentId }: KnowledgeBaseProps) {
   const readyCount = documents.filter((d) => d.status === "ready").length;
 
   return (
-    <section className="bg-card/60 elev-1 overflow-hidden rounded-2xl border backdrop-blur-sm">
+    <section className="border-rule overflow-hidden rounded-lg border">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b px-5 py-4">
         <div className="flex items-start gap-3">
           <span className="bg-primary/10 text-primary mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg">
@@ -151,7 +151,7 @@ export function KnowledgeBase({ agentId }: KnowledgeBaseProps) {
             <Button
               onClick={() => void handleCrawl()}
               disabled={crawling || !url.trim()}
-              className="bg-brand-gradient elev-1 h-10 border-0 text-white hover:opacity-95"
+              className="bg-primary text-primary-foreground hover:bg-primary/85 h-10 border-0"
             >
               {crawling && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
               {crawling ? "Crawling…" : "Crawl"}

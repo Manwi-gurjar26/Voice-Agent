@@ -8,7 +8,6 @@ import { useAuth } from "@/lib/auth-context";
 import { createCheckoutSession, createPortalSession, formatApiError } from "@/lib/api";
 import type { PaidPlan, PlanTier } from "@/lib/types";
 import { Button } from "@/components/ui/button";
-import { Tilt } from "@/components/visuals/tilt";
 import { UsageRing } from "@/components/visuals/usage-ring";
 import { cn } from "@/lib/utils";
 
@@ -94,37 +93,35 @@ export default function BillingPage() {
   return (
     <div className="flex flex-col gap-8">
       <header>
-        <h1 className="text-3xl font-semibold tracking-tight">Billing</h1>
-        <p className="text-muted-foreground mt-1.5 text-sm">
+        <h1 className="display text-2xl font-bold">Billing</h1>
+        <p className="text-fg-dim mt-1 text-xs">
           Usage resets at the start of each billing period.
         </p>
       </header>
 
-      <section className="bg-card/60 elev-2 sheen relative overflow-hidden rounded-2xl border p-6 backdrop-blur-sm sm:p-8">
-        <span aria-hidden="true" className="bg-brand-gradient absolute inset-x-0 top-0 h-1" />
+      <section className="border-rule relative overflow-hidden border p-6 sm:p-8">
+        <span aria-hidden="true" className="bg-brand-gradient absolute inset-x-0 top-0 h-px" />
         <div className="flex flex-col items-center gap-8 sm:flex-row sm:items-center">
           <UsageRing percent={usagePct} caption="used" />
 
           <div className="min-w-0 flex-1 text-center sm:text-left">
             {/* "free plan" must stay one text run so it reads (and tests) as
                 a single label. */}
-            <h2 className="text-xl font-semibold tracking-tight capitalize">
-              {tenant.plan} plan
-            </h2>
+            <h2 className="display text-lg font-semibold capitalize">{tenant.plan} plan</h2>
 
-            <p className="text-muted-foreground mt-2 text-sm">
-              <span className="text-foreground font-semibold tabular-nums">
+            <p className="text-fg-dim mt-2 text-sm">
+              <span className="text-foreground mono-fig font-semibold">
                 {tenant.messages_used_in_period.toLocaleString()}
               </span>{" "}
               of{" "}
-              <span className="text-foreground font-semibold tabular-nums">
+              <span className="text-foreground mono-fig font-semibold">
                 {tenant.monthly_message_quota.toLocaleString()}
               </span>{" "}
               messages used
             </p>
 
-            <div className="text-muted-foreground mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs sm:justify-start">
-              <span className="tabular-nums">{remaining.toLocaleString()} remaining</span>
+            <div className="text-fg-faint mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs sm:justify-start">
+              <span className="mono-fig">{remaining.toLocaleString()} remaining</span>
               <span aria-hidden="true">·</span>
               <span>
                 since {new Date(tenant.period_started_at).toLocaleDateString(undefined, {
@@ -154,67 +151,60 @@ export default function BillingPage() {
       {upgradeOptions.length > 0 && (
         <section className="flex flex-col gap-5">
           <div>
-            <h2 className="text-lg font-semibold tracking-tight">Upgrade</h2>
-            <p className="text-muted-foreground mt-1 text-sm">
+            <h2 className="display text-lg font-semibold">Upgrade</h2>
+            <p className="text-fg-dim mt-1 text-xs">
               Every tier has the same features — only the monthly message allowance changes.
             </p>
           </div>
 
-          <div className="scene-3d grid gap-5 sm:grid-cols-3">
+          <div className="grid gap-px sm:grid-cols-3">
             {upgradeOptions.map((plan) => {
               const featured = plan === "pro";
               return (
-                <Tilt key={plan} className="h-full">
-                  <div
+                <div
+                  key={plan}
+                  className={cn(
+                    "relative flex h-full flex-col border p-6",
+                    featured ? "border-primary/40 bg-primary/[0.04]" : "border-rule",
+                  )}
+                >
+                  {featured && (
+                    <span className="bg-primary text-primary-foreground absolute -top-px right-4 flex items-center gap-1 rounded-b px-2 py-0.5 text-[10px] font-bold tracking-wide uppercase">
+                      <Sparkles className="size-2.5" aria-hidden="true" />
+                      Popular
+                    </span>
+                  )}
+
+                  <h3 className="text-sm font-semibold capitalize">{plan}</h3>
+                  <p className="text-fg-dim mt-1 text-xs">{PLAN_PITCH[plan]}</p>
+
+                  <p className="mt-5 flex items-baseline gap-1.5">
+                    <span className="mono-fig text-2xl font-semibold tracking-tight">
+                      {PLAN_QUOTAS[plan].toLocaleString()}
+                    </span>
+                    <span className="text-fg-faint text-xs">messages / month</span>
+                  </p>
+
+                  <p className="text-fg-dim mt-3 flex items-center gap-1.5 text-xs">
+                    <Check className="text-success size-3.5 shrink-0" aria-hidden="true" />
+                    Chat, voice, and website crawling
+                  </p>
+
+                  <Button
                     className={cn(
-                      "bg-card/70 relative flex h-full flex-col overflow-hidden rounded-2xl border p-6 backdrop-blur-sm",
-                      featured ? "border-primary/40 elev-3" : "elev-1",
+                      "mt-6 w-full",
+                      featured && "bg-primary text-primary-foreground hover:bg-primary/85",
                     )}
+                    variant={featured ? "default" : "outline"}
+                    disabled={pendingAction !== null}
+                    onClick={() => void handleUpgrade(plan)}
                   >
-                    {featured && (
-                      <>
-                        <span
-                          aria-hidden="true"
-                          className="bg-brand-gradient absolute inset-x-0 top-0 h-1"
-                        />
-                        <span className="bg-primary/10 text-primary mb-3 inline-flex w-fit items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold">
-                          <Sparkles className="size-3" aria-hidden="true" />
-                          Most popular
-                        </span>
-                      </>
+                    {pendingAction === plan ? "Redirecting…" : `Upgrade to ${plan}`}
+                    {pendingAction !== plan && (
+                      <ArrowUpRight className="size-4" aria-hidden="true" />
                     )}
-
-                    <h3 className="text-base font-semibold capitalize">{plan}</h3>
-                    <p className="text-muted-foreground mt-1 text-xs">{PLAN_PITCH[plan]}</p>
-
-                    <p className="mt-5 flex items-baseline gap-1.5">
-                      <span className="text-2xl font-semibold tracking-tight tabular-nums">
-                        {PLAN_QUOTAS[plan].toLocaleString()}
-                      </span>
-                      <span className="text-muted-foreground text-xs">messages / month</span>
-                    </p>
-
-                    <p className="text-muted-foreground mt-3 flex items-center gap-1.5 text-xs">
-                      <Check className="text-success size-3.5 shrink-0" aria-hidden="true" />
-                      Chat, voice, and website crawling
-                    </p>
-
-                    <Button
-                      className={cn(
-                        "mt-6 w-full",
-                        featured && "bg-brand-gradient elev-2 border-0 text-white hover:opacity-95",
-                      )}
-                      variant={featured ? "default" : "outline"}
-                      disabled={pendingAction !== null}
-                      onClick={() => void handleUpgrade(plan)}
-                    >
-                      {pendingAction === plan ? "Redirecting…" : `Upgrade to ${plan}`}
-                      {pendingAction !== plan && (
-                        <ArrowUpRight className="size-4" aria-hidden="true" />
-                      )}
-                    </Button>
-                  </div>
-                </Tilt>
+                  </Button>
+                </div>
               );
             })}
           </div>

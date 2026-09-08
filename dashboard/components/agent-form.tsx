@@ -52,7 +52,7 @@ export const DEFAULT_AGENT_FORM_VALUES: AgentFormValues = {
   max_output_tokens: 2048,
   voice_enabled: false,
   voice_id: "",
-  primary_color: "#2F6FED",
+  primary_color: "#F84FCC",
   position: "bottom-right",
   allowed_origins_text: "",
   status: "draft",
@@ -69,7 +69,7 @@ export function agentToFormValues(agent: AgentRead): AgentFormValues {
     max_output_tokens: agent.max_output_tokens,
     voice_enabled: agent.voice_enabled,
     voice_id: agent.voice_id ?? "",
-    primary_color: agent.theme.primaryColor ?? "#2F6FED",
+    primary_color: agent.theme.primaryColor ?? "#F84FCC",
     position: agent.theme.position === "bottom-left" ? "bottom-left" : "bottom-right",
     allowed_origins_text: agent.allowed_origins.join("\n"),
     status: agent.status,
@@ -132,7 +132,7 @@ function FormSection({
   className?: string;
 }) {
   return (
-    <section className="bg-card/60 elev-1 overflow-hidden rounded-2xl border backdrop-blur-sm">
+    <section className="border-rule overflow-hidden rounded-lg border">
       <div className="flex items-start gap-3 border-b px-5 py-4">
         <span className="bg-primary/10 text-primary mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg">
           <Icon className="size-4" aria-hidden={true} />
@@ -159,7 +159,19 @@ function WidgetPreview({
   position: "bottom-right" | "bottom-left";
   greeting: string;
 }) {
-  const safeColor = /^#[0-9a-fA-F]{6}$/.test(color) ? color : "#2F6FED";
+  const safeColor = /^#[0-9a-fA-F]{6}$/.test(color) ? color : "#F84FCC";
+  // Mirrors widget/src/App.tsx's readableOn(), so the preview shows the same
+  // foreground the real widget will pick — a light brand colour renders with
+  // black text in both, rather than white here and black on the customer's
+  // actual site.
+  const readableOn = (hex: string): string => {
+    const channel = (offset: number) => {
+      const value = parseInt(hex.slice(offset, offset + 2), 16) / 255;
+      return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+    return luminance > 0.179 ? "#000" : "#fff";
+  };
   return (
     <div
       aria-hidden="true"
@@ -184,14 +196,14 @@ function WidgetPreview({
         )}
       >
         <span
-          className="elev-2 max-w-[13rem] truncate rounded-2xl px-3 py-2 text-[11px] text-white"
-          style={{ background: safeColor }}
+          className="elev-2 max-w-[13rem] truncate rounded-xl px-3 py-2 text-[11px]"
+          style={{ background: safeColor, color: readableOn(safeColor) }}
         >
           {greeting || "Hi! How can I help you today?"}
         </span>
         <span
-          className="elev-2 grid size-10 place-items-center rounded-full text-white"
-          style={{ background: safeColor }}
+          className="elev-2 grid size-10 place-items-center rounded-full"
+          style={{ background: safeColor, color: readableOn(safeColor) }}
         >
           <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor">
             <path d="M4 4h16v12H7.5L4 19.5V4z" strokeWidth="2" strokeLinejoin="round" />
@@ -363,7 +375,7 @@ export function AgentForm({ mode, defaultValues, onSubmit, submitting, submitLab
               <input
                 type="color"
                 aria-label="Primary color picker"
-                value={/^#[0-9a-fA-F]{6}$/.test(primaryColor) ? primaryColor : "#2f6fed"}
+                value={/^#[0-9a-fA-F]{6}$/.test(primaryColor) ? primaryColor : "#f84fcc"}
                 onChange={(e) => setValue("primary_color", e.target.value)}
                 className="size-10 cursor-pointer rounded-lg border bg-transparent p-1"
               />
@@ -444,14 +456,14 @@ export function AgentForm({ mode, defaultValues, onSubmit, submitting, submitLab
           Near-opaque on purpose: this overlays scrolling content, and at the
           usual glass opacity the section headings underneath showed straight
           through the bar's own text. */}
-      <div className="bg-card/95 elev-3 sticky bottom-4 z-10 flex items-center justify-between gap-4 rounded-2xl border px-4 py-3 backdrop-blur-xl">
+      <div className="glass-strong sticky bottom-4 z-10 flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
         <p className="text-muted-foreground hidden text-xs sm:block">
           Changes apply to every site embedding this agent.
         </p>
         <Button
           type="submit"
           disabled={submitting}
-          className="bg-brand-gradient elev-2 ml-auto h-10 border-0 text-white hover:opacity-95"
+          className="bg-primary text-primary-foreground hover:bg-primary/85 ml-auto h-10 border-0"
         >
           {submitting ? "Saving…" : submitLabel}
         </Button>

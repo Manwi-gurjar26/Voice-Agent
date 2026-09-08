@@ -5,14 +5,33 @@
 
 :host,
 .va-root {
-  --va-primary: #2f6fed;
+  --va-primary: #f84fcc;
+  /* Set from App.tsx by readableOn(): black or white, whichever is legible on
+     whatever primaryColor the customer configured. The stylesheet used to
+     hard-code white here, which fails on any light brand colour. */
+  --va-on-primary: #000;
   --va-bubble-radius: 16px;
+
+  /* Dark surface ramp, matching the dashboard's ink scale. No web font is
+     loaded: the widget runs on someone else's page and must not add a
+     render-blocking request to it, so this stays on the system stack. */
+  --va-bg: #0a0a0c;
+  --va-surface: #17171b;
+  --va-surface-2: #1f1f24;
+  --va-fg: #f5f5f5;
+  --va-fg-dim: #c4c3c7;
+  --va-fg-faint: #8a888d;
+  --va-rule: rgba(255, 255, 255, 0.1);
+  --va-rule-strong: rgba(255, 255, 255, 0.16);
+  --va-danger: #ff6b6b;
+  --va-danger-bg: rgba(255, 107, 107, 0.14);
+
   --va-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   all: initial;
   font-family: var(--va-font);
   font-size: 14px;
   line-height: 1.45;
-  color: #1a1a1a;
+  color: var(--va-fg);
 }
 
 .va-root * {
@@ -42,11 +61,11 @@
   height: 56px;
   border-radius: 50%;
   background: var(--va-primary);
-  color: #fff;
+  color: var(--va-on-primary);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
   transition: transform 0.15s ease;
 }
 
@@ -76,13 +95,13 @@
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--va-bg);
   color: var(--va-primary);
-  border: 2px solid var(--va-primary);
+  border: 1px solid var(--va-primary);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
   transition: transform 0.15s ease;
 }
 
@@ -104,9 +123,9 @@
 }
 
 .va-voice-launcher.va-voice-recording {
-  background: #e0433a;
-  color: #fff;
-  border-color: #e0433a;
+  background: var(--va-danger);
+  color: #000;
+  border-color: var(--va-danger);
   animation: va-mic-pulse 1.4s infinite ease-in-out;
 }
 
@@ -115,7 +134,7 @@
    "it's answering me" are never confusable at a glance. */
 .va-voice-launcher.va-voice-busy {
   background: var(--va-primary);
-  color: #fff;
+  color: var(--va-on-primary);
   border-color: var(--va-primary);
 }
 
@@ -141,9 +160,10 @@
   max-width: calc(100vw - 40px);
   height: 520px;
   max-height: calc(100vh - 120px);
-  background: #fff;
-  border-radius: 14px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  background: var(--va-bg);
+  border: 1px solid var(--va-rule);
+  border-radius: 12px;
+  box-shadow: 0 16px 56px rgba(0, 0, 0, 0.62);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -183,9 +203,10 @@
 }
 
 .va-header {
-  padding: 14px 16px;
-  background: var(--va-primary);
-  color: #fff;
+  padding: 13px 15px;
+  background: var(--va-surface);
+  border-bottom: 1px solid var(--va-rule);
+  color: var(--va-fg);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -201,7 +222,7 @@
 }
 
 .va-close-button {
-  color: #fff;
+  color: var(--va-fg-faint);
   width: 28px;
   height: 28px;
   display: flex;
@@ -213,7 +234,8 @@
 
 .va-close-button:hover {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.15);
+  color: var(--va-fg);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 /* --- Messages --- */
@@ -248,32 +270,32 @@
 
 .va-role-user .va-bubble {
   background: var(--va-primary);
-  color: #fff;
+  color: var(--va-on-primary);
   border-bottom-right-radius: 4px;
 }
 
 .va-role-assistant .va-bubble {
-  background: #f1f2f5;
-  color: #1a1a1a;
+  background: var(--va-surface);
+  color: var(--va-fg);
   border-bottom-left-radius: 4px;
 }
 
 .va-bubble.va-failed {
-  background: #fdecea;
-  color: #7a1f1f;
+  background: var(--va-danger-bg);
+  color: var(--va-danger);
 }
 
 .va-citations {
   margin-top: 6px;
   font-size: 11.5px;
-  color: #666;
+  color: var(--va-fg-faint);
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
 .va-citation-chip {
-  background: #eef1f6;
+  border: 1px solid var(--va-rule);
   border-radius: 999px;
   padding: 2px 8px;
 }
@@ -288,7 +310,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #9aa0aa;
+  background: var(--va-fg-faint);
   animation: va-typing-bounce 1.1s infinite ease-in-out;
 }
 
@@ -317,8 +339,8 @@
 .va-error-banner {
   margin: 0 14px 8px;
   padding: 8px 10px;
-  background: #fdecea;
-  color: #7a1f1f;
+  background: var(--va-danger-bg);
+  color: var(--va-danger);
   border-radius: 8px;
   font-size: 12.5px;
   flex-shrink: 0;
@@ -330,20 +352,26 @@
   align-items: flex-end;
   gap: 8px;
   padding: 10px;
-  border-top: 1px solid #ececec;
+  border-top: 1px solid var(--va-rule);
   flex-shrink: 0;
 }
 
 .va-composer textarea {
   flex: 1;
   resize: none;
-  border: 1px solid #dcdfe4;
-  border-radius: 10px;
+  background: transparent;
+  color: var(--va-fg);
+  border: 1px solid var(--va-rule-strong);
+  border-radius: 8px;
   padding: 8px 10px;
   font: inherit;
   max-height: 96px;
   min-height: 36px;
   outline: none;
+}
+
+.va-composer textarea::placeholder {
+  color: var(--va-fg-faint);
 }
 
 .va-composer textarea:focus {
@@ -353,9 +381,9 @@
 .va-send-button {
   width: 36px;
   height: 36px;
-  border-radius: 50%;
+  border-radius: 8px;
   background: var(--va-primary);
-  color: #fff;
+  color: var(--va-on-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -371,9 +399,9 @@
 .va-mic-button {
   width: 36px;
   height: 36px;
-  border-radius: 50%;
-  background: #f1f2f5;
-  color: #555;
+  border-radius: 8px;
+  background: var(--va-surface-2);
+  color: var(--va-fg-dim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -387,18 +415,18 @@
 }
 
 .va-mic-button.va-mic-recording {
-  background: #e0433a;
-  color: #fff;
+  background: var(--va-danger);
+  color: #000;
   animation: va-mic-pulse 1.4s infinite ease-in-out;
 }
 
 @keyframes va-mic-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(224, 67, 58, 0.4);
+    box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.45);
   }
   50% {
-    box-shadow: 0 0 0 8px rgba(224, 67, 58, 0);
+    box-shadow: 0 0 0 8px rgba(255, 107, 107, 0);
   }
 }
 
@@ -408,6 +436,6 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #888;
+  color: var(--va-fg-faint);
   font-size: 13px;
 }

@@ -47,7 +47,7 @@ export default function ForgotPasswordPage() {
 
   if (sent) {
     return (
-      <Card className="glass-strong elev-3 sheen relative rounded-2xl py-6 ring-0">
+      <Card className="bg-card sheen relative rounded-lg border py-6 ring-0">
         <CardHeader className="gap-2">
           <h1 className="text-2xl font-semibold tracking-tight">Check your email</h1>
           <p className="text-muted-foreground text-sm">
@@ -69,7 +69,7 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <Card className="glass-strong elev-3 sheen relative rounded-2xl py-6 ring-0">
+    <Card className="bg-card sheen relative rounded-lg border py-6 ring-0">
       <CardHeader className="gap-2">
         <h1 className="text-2xl font-semibold tracking-tight">Forgot your password?</h1>
         <p className="text-muted-foreground text-sm">
@@ -101,7 +101,7 @@ export default function ForgotPasswordPage() {
           <Button
             type="submit"
             disabled={submitting}
-            className="bg-brand-gradient elev-2 group h-11 w-full border-0 text-white hover:opacity-95"
+            className="bg-primary text-primary-foreground hover:bg-primary/85 group h-11 w-full border-0"
           >
             {submitting ? "Sending…" : "Send reset link"}
             {!submitting && (

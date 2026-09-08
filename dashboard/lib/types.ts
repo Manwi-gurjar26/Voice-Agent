@@ -154,3 +154,135 @@ export interface ApiErrorBody {
     details?: Record<string, unknown>;
   };
 }
+
+// --- Analytics (mirrors backend/app/schemas/analytics.py) ---
+
+export interface DailyPoint {
+  day: string;
+  conversations: number;
+  messages: number;
+  sessions: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface PeriodTotals {
+  conversations: number;
+  messages: number;
+  user_messages: number;
+  assistant_messages: number;
+  sessions: number;
+  input_tokens: number;
+  output_tokens: number;
+  cited_replies: number;
+  voice_agents_used: number;
+}
+
+export interface AgentUsage {
+  id: string;
+  name: string;
+  status: AgentStatus;
+  voice_enabled: boolean;
+  conversations: number;
+  messages: number;
+  input_tokens: number;
+  output_tokens: number;
+  last_activity_at: string | null;
+}
+
+export interface OriginUsage {
+  origin: string;
+  sessions: number;
+}
+
+export interface KnowledgeBaseStats {
+  documents: number;
+  ready: number;
+  pending: number;
+  processing: number;
+  failed: number;
+  characters: number;
+}
+
+export interface QuotaStats {
+  plan: PlanTier;
+  used: number;
+  quota: number;
+  remaining: number;
+  percent_used: number;
+  period_started_at: string;
+}
+
+export interface RecentConversation {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  messages: number;
+  started_at: string;
+  last_message_at: string | null;
+}
+
+export interface AnalyticsOverview {
+  generated_at: string;
+  range_days: number;
+  range_start: string;
+  totals: PeriodTotals;
+  previous_totals: PeriodTotals;
+  daily: DailyPoint[];
+  agents: AgentUsage[];
+  origins: OriginUsage[];
+  knowledge_base: KnowledgeBaseStats;
+  quota: QuotaStats;
+  recent_conversations: RecentConversation[];
+  agents_total: number;
+  agents_active: number;
+}
+
+// --- Preview (mirrors backend/app/api/v1/preview.py) ---
+// The message/citation shapes are the same rows the widget renders; kept
+// here rather than imported from widget/ because the two apps build and
+// deploy independently.
+
+export interface Citation {
+  document_id: string;
+  title: string;
+}
+
+export interface AgentPublicConfig {
+  name: string;
+  greeting: string;
+  voice_enabled: boolean;
+  theme: AgentTheme;
+}
+
+export interface ConversationRead {
+  id: string;
+  created_at: string;
+}
+
+export interface MessageRead {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: Citation[] | null;
+  created_at: string;
+}
+
+export interface VoiceReplyResponse {
+  transcript: string;
+  message: MessageRead;
+  audio_base64: string;
+  audio_mime: string;
+}
+
+export interface SseDoneData {
+  message_id: string;
+  stop_reason: string | null;
+  usage: { input_tokens: number; output_tokens: number };
+  citations: Citation[];
+}
+
+export type PreviewStreamEvent =
+  | { event: "delta"; data: { text: string } }
+  | { event: "done"; data: SseDoneData }
+  | { event: "error"; data: { code: string; message: string } };

@@ -2,12 +2,12 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { BookOpenText, Mic, Zap } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
-import { Aurora } from "@/components/visuals/aurora";
+import { Backdrop } from "@/components/visuals/backdrop";
 import { VoiceOrb } from "@/components/visuals/voice-orb";
 import { Wordmark } from "@/components/visuals/brand";
-import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 const HIGHLIGHTS = [
   {
@@ -32,30 +32,32 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
   const router = useRouter();
 
   useEffect(() => {
-    if (status === "authenticated") router.replace("/agents");
+    if (status === "authenticated") router.replace("/overview");
   }, [status, router]);
 
   if (status === "authenticated") return null;
 
   return (
     <div className="relative flex flex-1">
-      <Aurora />
+      <Backdrop />
 
       {/* Showcase. Hidden below lg — on a phone it would push the form,
           which is the entire point of the page, below the fold. */}
-      <aside className="relative hidden w-[46%] max-w-2xl flex-col justify-between overflow-hidden border-r p-10 xl:p-14 lg:flex">
-        <Wordmark />
+      <aside className="relative hidden w-[46%] max-w-2xl flex-col justify-between overflow-hidden border-r p-10 lg:flex xl:p-14">
+        <Link href="/" className="w-fit">
+          <Wordmark />
+        </Link>
 
         <div className="relative flex flex-col items-center gap-10 py-6">
-          <VoiceOrb size={300} className="animate-float" />
+          <VoiceOrb size={280} className="animate-float" />
           <div className="max-w-md text-center">
-            <h2 className="text-3xl font-semibold tracking-tight text-balance xl:text-4xl">
+            <h2 className="display text-3xl font-bold text-balance xl:text-4xl">
               An AI agent that actually
               <span className="text-gradient"> knows your business</span>
             </h2>
-            <p className="text-muted-foreground mt-4 leading-relaxed text-pretty">
-              Crawl your site, embed one line of code, and let visitors ask anything — by
-              typing or out loud.
+            <p className="text-fg-dim mt-4 text-sm leading-relaxed text-pretty">
+              Crawl your site, embed one line of code, and let visitors ask anything — by typing
+              or out loud.
             </p>
           </div>
         </div>
@@ -63,12 +65,12 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
         <ul className="flex flex-col gap-4">
           {HIGHLIGHTS.map(({ Icon, title, body }) => (
             <li key={title} className="flex items-start gap-3.5">
-              <span className="bg-primary/10 text-primary mt-0.5 grid size-9 shrink-0 place-items-center rounded-xl">
-                <Icon className="size-4.5" aria-hidden="true" />
+              <span className="border-rule text-primary mt-0.5 grid size-8 shrink-0 place-items-center rounded-md border">
+                <Icon className="size-4" aria-hidden="true" />
               </span>
               <span>
-                <span className="block text-sm font-medium">{title}</span>
-                <span className="text-muted-foreground block text-sm">{body}</span>
+                <span className="block text-[13px] font-medium">{title}</span>
+                <span className="text-fg-dim block text-[13px]">{body}</span>
               </span>
             </li>
           ))}
@@ -76,12 +78,11 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
       </aside>
 
       <main className="relative flex flex-1 items-center justify-center p-6">
-        <div className="absolute top-6 right-6">
-          <ThemeToggle />
-        </div>
         <div className="w-full max-w-sm">
           <div className="mb-8 lg:hidden">
-            <Wordmark />
+            <Link href="/" className="w-fit">
+              <Wordmark />
+            </Link>
           </div>
           <div className="animate-reveal">{children}</div>
         </div>

@@ -45,7 +45,7 @@ export default function SignupPage() {
         ...values,
         full_name: values.full_name?.trim() ? values.full_name.trim() : null,
       });
-      router.replace("/agents");
+      router.replace("/overview");
     } catch (err) {
       toast.error(formatApiError(err));
     } finally {
@@ -54,7 +54,7 @@ export default function SignupPage() {
   }
 
   return (
-    <Card className="glass-strong elev-3 sheen relative rounded-2xl py-6 ring-0">
+    <Card className="bg-card sheen relative rounded-lg border py-6 ring-0">
       <CardHeader className="gap-2">
         <h1 className="text-2xl font-semibold tracking-tight">Create your workspace</h1>
         <p className="text-muted-foreground text-sm">
@@ -140,7 +140,7 @@ export default function SignupPage() {
           <Button
             type="submit"
             disabled={submitting}
-            className="bg-brand-gradient elev-2 group h-11 w-full border-0 text-white hover:opacity-95"
+            className="bg-primary text-primary-foreground hover:bg-primary/85 group h-11 w-full border-0"
           >
             {submitting ? "Creating workspace…" : "Create workspace"}
             {!submitting && (

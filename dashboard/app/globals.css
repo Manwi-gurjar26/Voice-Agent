@@ -8,7 +8,7 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-mono: var(--font-jetbrains-mono);
   --font-heading: var(--font-geist-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -44,6 +44,12 @@
   --color-brand-1: var(--brand-1);
   --color-brand-2: var(--brand-2);
   --color-brand-3: var(--brand-3);
+  /* Dim/faint text, addressable as text-fg-dim / text-fg-faint. The
+     shadcn scale only has one "muted" step; this palette needs two. */
+  --color-fg-dim: var(--fg-dim);
+  --color-fg-faint: var(--fg-faint);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -54,169 +60,224 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Palette. Replaces shadcn's default all-zero-chroma greyscale with a real
-   brand identity: a violet→indigo→cyan ramp that reads as "AI/voice product"
-   rather than "unstyled starter". Every value is OKLCH so light and dark
-   share the same hue family and only shift lightness/chroma — which is what
-   keeps the two themes recognisably the same product.
+   Palette — an ink ramp on true black with a magenta accent and cyan
+   secondary, no purple or blue anywhere in the ramp.
+
+   Structure is deliberately two-layer: a small set of raw ink/accent values,
+   then semantic aliases (--bg, --fg, --rule, --accent) on top. Only the raw
+   layer holds a literal colour, so re-tinting the whole product is an edit to
+   six lines rather than a search across every component.
+
+   Dark-only. There is no light block and no .dark selector: the app forces
+   `class="dark"` at the root, so a second palette would be dead code that
+   still has to be kept correct.
 --------------------------------------------------------------------------- */
 :root {
-  --background: oklch(0.988 0.004 285);
-  --foreground: oklch(0.2 0.021 285);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.2 0.021 285);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.2 0.021 285);
-  --primary: oklch(0.545 0.235 277);
-  --primary-foreground: oklch(0.99 0.005 285);
-  --secondary: oklch(0.965 0.008 285);
-  --secondary-foreground: oklch(0.28 0.03 285);
-  --muted: oklch(0.966 0.006 285);
-  --muted-foreground: oklch(0.505 0.022 285);
-  --accent: oklch(0.955 0.018 280);
-  --accent-foreground: oklch(0.32 0.06 278);
-  --destructive: oklch(0.585 0.22 27);
-  --success: oklch(0.62 0.16 155);
-  --warning: oklch(0.72 0.16 75);
-  --border: oklch(0.915 0.008 285);
-  --input: oklch(0.915 0.008 285);
-  --ring: oklch(0.545 0.235 277);
+  color-scheme: dark;
 
-  /* Gradient ramp — used by .text-gradient, the aurora, and the 3D orb. */
-  --brand-1: oklch(0.58 0.24 285);
-  --brand-2: oklch(0.6 0.22 258);
-  --brand-3: oklch(0.72 0.15 205);
+  /* Raw ink ramp. 0 is the page, 1/2 are the two elevated surfaces.
+     The two surfaces are hex, not oklch: at this end of the scale an oklch
+     lightness of a few percent lands on #010101, and the gap between a card
+     and the page disappears entirely. */
+  --ink-0: #000000;
+  --ink-1: #0a0a0c;
+  --ink-2: #131317;
+  --ink-5: oklch(50% 0.008 300);
+  --ink-6: oklch(63% 0.007 300);
+  --ink-7: oklch(82% 0.005 300);
+  --ink-9: oklch(97% 0 0);
 
-  --chart-1: oklch(0.58 0.24 285);
-  --chart-2: oklch(0.6 0.22 258);
-  --chart-3: oklch(0.72 0.15 205);
-  --chart-4: oklch(0.68 0.17 330);
-  --chart-5: oklch(0.7 0.16 75);
+  --magenta: oklch(70% 0.24 340);
+  --cyan: oklch(81% 0.14 200);
 
-  --radius: 0.75rem;
+  /* Semantic layer. */
+  --bg: var(--ink-0);
+  --bg-elev: var(--ink-1);
+  --fg: var(--ink-9);
+  --fg-dim: var(--ink-7);
+  --fg-faint: var(--ink-5);
+  --rule: oklch(100% 0 0 / 0.08);
+  --rule-strong: oklch(100% 0 0 / 0.14);
 
-  --sidebar: oklch(0.985 0.005 285);
-  --sidebar-foreground: oklch(0.2 0.021 285);
-  --sidebar-primary: oklch(0.545 0.235 277);
-  --sidebar-primary-foreground: oklch(0.99 0.005 285);
-  --sidebar-accent: oklch(0.955 0.018 280);
-  --sidebar-accent-foreground: oklch(0.32 0.06 278);
-  --sidebar-border: oklch(0.915 0.008 285);
-  --sidebar-ring: oklch(0.545 0.235 277);
+  --background: var(--bg);
+  --foreground: var(--fg);
+  --card: var(--bg-elev);
+  --card-foreground: var(--fg);
+  --popover: var(--ink-2);
+  --popover-foreground: var(--fg);
 
-  /* Shadows are tinted with the brand hue rather than pure black — neutral
-     black shadows are what make an otherwise-good layout look cheap.
-     Order is chroma-then-hue: these interpolate into oklch(L C H / A). */
-  --shadow-color: 0.04 285;
-  --elev-1: 0 1px 2px oklch(0.2 var(--shadow-color) / 0.06),
-    0 1px 3px oklch(0.2 var(--shadow-color) / 0.04);
-  --elev-2: 0 2px 4px oklch(0.2 var(--shadow-color) / 0.05),
-    0 6px 16px oklch(0.2 var(--shadow-color) / 0.08);
-  --elev-3: 0 4px 8px oklch(0.2 var(--shadow-color) / 0.06),
-    0 16px 40px oklch(0.2 var(--shadow-color) / 0.12);
-  --elev-4: 0 8px 16px oklch(0.2 var(--shadow-color) / 0.08),
-    0 32px 72px oklch(0.2 var(--shadow-color) / 0.16);
-}
+  /* Magenta on black is bright enough that black text sits on top of it —
+     the same inversion omp uses for its skip link and primary actions. */
+  --primary: var(--magenta);
+  --primary-foreground: var(--ink-0);
 
-.dark {
-  --background: oklch(0.155 0.017 280);
-  --foreground: oklch(0.965 0.008 285);
-  --card: oklch(0.205 0.02 282);
-  --card-foreground: oklch(0.965 0.008 285);
-  --popover: oklch(0.215 0.021 282);
-  --popover-foreground: oklch(0.965 0.008 285);
-  --primary: oklch(0.685 0.2 280);
-  --primary-foreground: oklch(0.16 0.02 280);
-  --secondary: oklch(0.265 0.021 282);
-  --secondary-foreground: oklch(0.965 0.008 285);
-  --muted: oklch(0.26 0.02 282);
-  --muted-foreground: oklch(0.715 0.02 285);
-  --accent: oklch(0.3 0.04 280);
-  --accent-foreground: oklch(0.95 0.02 285);
-  --destructive: oklch(0.7 0.19 22);
-  --success: oklch(0.72 0.16 158);
-  --warning: oklch(0.8 0.15 80);
-  --border: oklch(1 0 0 / 12%);
-  --input: oklch(1 0 0 / 16%);
-  --ring: oklch(0.685 0.2 280);
+  --secondary: oklch(100% 0 0 / 0.06);
+  --secondary-foreground: var(--fg);
+  --muted: oklch(100% 0 0 / 0.05);
+  /* ink-6, not ink-5: ~7:1 on black. ink-5 is reserved for the tiny
+     all-caps labels, where it is decorative chrome beside a real value. */
+  --muted-foreground: var(--ink-6);
+  --accent: oklch(70% 0.24 340 / 0.12);
+  --accent-foreground: var(--fg);
 
-  --brand-1: oklch(0.7 0.21 288);
-  --brand-2: oklch(0.7 0.18 262);
-  --brand-3: oklch(0.8 0.14 200);
+  --destructive: oklch(68% 0.2 25);
+  --success: oklch(78% 0.17 155);
+  --warning: oklch(84% 0.15 80);
 
-  --chart-1: oklch(0.7 0.21 288);
-  --chart-2: oklch(0.7 0.18 262);
-  --chart-3: oklch(0.8 0.14 200);
-  --chart-4: oklch(0.74 0.16 330);
-  --chart-5: oklch(0.78 0.15 75);
+  --border: var(--rule);
+  --input: var(--rule-strong);
+  --ring: var(--magenta);
+  --selection: oklch(70% 0.24 340 / 0.32);
 
-  --sidebar: oklch(0.185 0.019 281);
-  --sidebar-foreground: oklch(0.965 0.008 285);
-  --sidebar-primary: oklch(0.685 0.2 280);
-  --sidebar-primary-foreground: oklch(0.16 0.02 280);
-  --sidebar-accent: oklch(0.3 0.04 280);
-  --sidebar-accent-foreground: oklch(0.95 0.02 285);
-  --sidebar-border: oklch(1 0 0 / 12%);
-  --sidebar-ring: oklch(0.685 0.2 280);
+  /* The accent ramp behind .text-gradient, .bg-brand-gradient and the orb.
+     Magenta → magenta-lifted → cyan: the sweep stays in the accent's own
+     hue for most of its length and only reaches cyan at the very end, which
+     is what keeps a gradient from reading as a second, competing colour. */
+  --brand-1: var(--magenta);
+  --brand-2: oklch(76% 0.19 355);
+  --brand-3: var(--cyan);
 
-  --shadow-color: 0.06 285;
-  --elev-1: 0 1px 2px oklch(0 0 0 / 0.3);
-  --elev-2: 0 2px 4px oklch(0 0 0 / 0.3), 0 6px 16px oklch(0 0 0 / 0.35);
-  --elev-3: 0 4px 8px oklch(0 0 0 / 0.32), 0 16px 40px oklch(0 0 0 / 0.45);
-  --elev-4: 0 8px 16px oklch(0 0 0 / 0.35), 0 32px 72px oklch(0 0 0 / 0.55);
+  --chart-1: var(--magenta);
+  --chart-2: var(--cyan);
+  --chart-3: oklch(88% 0 0);
+  --chart-4: oklch(84% 0.15 80);
+  --chart-5: var(--ink-5);
+
+  /* Squarer than the previous 0.75rem. On a flat black surface a large
+     radius reads as a bubble; the reference is close to rectilinear. */
+  --radius: 0.5rem;
+
+  --sidebar: var(--bg);
+  --sidebar-foreground: var(--fg);
+  --sidebar-primary: var(--magenta);
+  --sidebar-primary-foreground: var(--ink-0);
+  --sidebar-accent: oklch(100% 0 0 / 0.06);
+  --sidebar-accent-foreground: var(--fg);
+  --sidebar-border: var(--rule);
+  --sidebar-ring: var(--magenta);
+
+  /* On black, a drop shadow is nearly invisible — depth here comes from the
+     hairline rules and the ink ramp instead. These stay defined (existing
+     components reference .elev-*) but are deliberately close to flat, with
+     just enough spread to separate a floating popover from the page. */
+  --elev-1: 0 1px 0 oklch(100% 0 0 / 0.03) inset;
+  --elev-2:
+    0 1px 0 oklch(100% 0 0 / 0.04) inset, 0 8px 24px oklch(0% 0 0 / 0.6);
+  --elev-3:
+    0 1px 0 oklch(100% 0 0 / 0.05) inset, 0 16px 48px oklch(0% 0 0 / 0.7);
+  --elev-4:
+    0 1px 0 oklch(100% 0 0 / 0.06) inset, 0 32px 80px oklch(0% 0 0 / 0.8);
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    background: var(--bg);
+    color: var(--fg);
+    @apply font-sans;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* Geist's stylistic sets — ss01/ss02 give the alternate a/g and cv11 the
+       straight-sided l, which is the difference between "the default web
+       font" and a typeface that looks chosen. */
+    font-feature-settings: "ss01", "ss02", "cv11";
+    -webkit-tap-highlight-color: transparent;
+  }
   body {
     @apply bg-background text-foreground;
-    -webkit-font-smoothing: antialiased;
   }
-  html {
-    @apply font-sans;
-  }
-  /* Display-weight headings: tight tracking is most of what separates a
-     "designed" interface from a default one. */
   h1,
   h2,
   h3 {
-    letter-spacing: -0.022em;
+    letter-spacing: -0.025em;
+  }
+  hr {
+    border: 0;
+    border-top: 1px solid var(--rule);
   }
   ::selection {
-    background: color-mix(in oklch, var(--primary) 28%, transparent);
+    background: var(--selection);
+    color: var(--fg);
   }
-  /* A brand-tinted scrollbar, so the chrome doesn't undo the theming. */
   * {
-    scrollbar-color: color-mix(in oklch, var(--foreground) 22%, transparent) transparent;
+    scrollbar-color: oklch(100% 0 0 / 0.16) transparent;
     scrollbar-width: thin;
   }
 }
 
-/* ---------------------------------------------------------------------------
-   3D primitives. Real perspective projection via CSS transforms — genuinely
-   3D (not a skeuomorphic drop-shadow imitation) while costing zero KB of
-   JavaScript and staying on the GPU compositor.
---------------------------------------------------------------------------- */
 @layer utilities {
-  .scene-3d {
-    perspective: 1100px;
-    perspective-origin: 50% 50%;
-  }
-  .scene-3d-near {
-    perspective: 600px;
-    perspective-origin: 50% 50%;
-  }
-  .preserve-3d {
-    transform-style: preserve-3d;
-  }
-  .backface-hidden {
-    backface-visibility: hidden;
+  /* -----------------------------------------------------------------------
+     Typography roles. These are the load-bearing part of the look: a black
+     page with hairline rules only reads as designed when the type does the
+     hierarchy, so each role is named rather than reassembled from utilities
+     at every call site.
+  ----------------------------------------------------------------------- */
+
+  /* Headline setting. Tighter than the base -0.025em, and text-wrap:balance
+     so a two-line headline breaks evenly instead of leaving one orphan. */
+  .display {
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01";
+    letter-spacing: -0.03em;
+    text-wrap: balance;
   }
 
-  /* Depth. Applied as classes rather than Tailwind's shadow-* so the tinted
-     multi-layer values above stay the single source of truth. */
+  /* Numerals that do not jitter as they change — mandatory for any figure
+     that live-updates or sits in a column. */
+  .mono-fig {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums slashed-zero;
+  }
+
+  /* The small all-caps label above a section or beside a stat. */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.4;
+    text-transform: uppercase;
+    letter-spacing: 0.24em;
+    color: var(--fg-faint);
+  }
+
+  .terminal {
+    font-family: var(--font-mono);
+    letter-spacing: -0.01em;
+    font-size: clamp(0.78rem, 0.6rem + 0.3vw, 0.9rem);
+    line-height: 1.55;
+  }
+
+  .prose-measure {
+    max-width: 66ch;
+    line-height: 1.72;
+    text-wrap: pretty;
+  }
+
+  /* A light sweep travelling left across the text, pausing, then repeating —
+     used once per screen, on the single line that should catch the eye. The
+     cyan only ever appears here and in charts, which is what keeps it a
+     secondary accent rather than a second brand colour. */
+  .sunray {
+    --ray-dim: color-mix(in oklch, var(--cyan) 42%, transparent);
+    --ray-lit: var(--ink-9);
+    background-image: linear-gradient(
+      105deg,
+      var(--ray-dim) 38%,
+      var(--ray-lit) 50%,
+      var(--ray-dim) 62%
+    );
+    background-size: 320% 100%;
+    background-position: 100% 0;
+    color: transparent;
+    -webkit-background-clip: text;
+    background-clip: text;
+    animation: sunray-sweep 9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+
+  /* -----------------------------------------------------------------------
+     Surfaces
+  ----------------------------------------------------------------------- */
   .elev-1 {
     box-shadow: var(--elev-1);
   }
@@ -231,14 +292,56 @@
   }
 
   .glass {
-    background: color-mix(in oklch, var(--card) 68%, transparent);
-    backdrop-filter: blur(20px) saturate(180%);
-    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    background: color-mix(in oklch, var(--bg) 72%, transparent);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
   }
   .glass-strong {
-    background: color-mix(in oklch, var(--card) 86%, transparent);
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    background: color-mix(in oklch, var(--bg) 90%, transparent);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+  }
+
+  /* A hairline lit edge following the element's own radius: fill the padding
+     box with a 1px gradient, then mask the content box back out. Both the
+     standard and -webkit- mask pairs are set; Safari still needs the latter.
+     Far fainter than on a light ground — on black, a bright edge is the
+     single fastest way to make a surface look plastic. */
+  .sheen::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      160deg,
+      color-mix(in oklch, white 22%, transparent),
+      transparent 45%
+    );
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    -webkit-mask-composite: xor;
+    pointer-events: none;
+  }
+
+  .grid-pattern {
+    background-image:
+      linear-gradient(to right, oklch(100% 0 0 / 0.045) 1px, transparent 1px),
+      linear-gradient(to bottom, oklch(100% 0 0 / 0.045) 1px, transparent 1px);
+    background-size: 44px 44px;
+  }
+
+  /* Ruled hairlines, the reference's main structural device. */
+  .rule-t {
+    border-top: 1px solid var(--rule);
+  }
+  .rule-b {
+    border-bottom: 1px solid var(--rule);
   }
 
   .text-gradient {
@@ -255,57 +358,48 @@
 
   .bg-brand-gradient {
     background-image: linear-gradient(
-      135deg,
+      100deg,
       var(--brand-1) 0%,
-      var(--brand-2) 50%,
+      var(--brand-2) 52%,
       var(--brand-3) 100%
     );
   }
 
-  /* A hairline lit edge that follows the element's own border radius — the
-     detail that makes a surface read as lit from above rather than flat.
-     Painted as a 1px gradient ring: fill the padding box, then mask the
-     content box back out. Both the standard and -webkit- mask properties
-     are set; Safari still needs the prefixed pair. */
-  .sheen::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    padding: 1px;
-    background: linear-gradient(
-      160deg,
-      color-mix(in oklch, white 70%, transparent),
-      transparent 45%
-    );
-    mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    -webkit-mask:
-      linear-gradient(#000 0 0) content-box,
-      linear-gradient(#000 0 0);
-    mask-composite: exclude;
-    -webkit-mask-composite: xor;
-    pointer-events: none;
-    opacity: 0.6;
+  /* -----------------------------------------------------------------------
+     Motion
+  ----------------------------------------------------------------------- */
+
+  /* Edge-faded infinite scroller. The mask is what sells it — a marquee that
+     hard-clips at the container edge reads as a bug. */
+  .marquee {
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 10% 90%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 10% 90%, transparent);
   }
-  .dark .sheen::before {
-    opacity: 0.16;
+  .marquee-track {
+    animation: marquee-drift 60s linear infinite;
   }
 
-  .grid-pattern {
-    background-image:
-      linear-gradient(
-        to right,
-        color-mix(in oklch, var(--foreground) 6%, transparent) 1px,
-        transparent 1px
-      ),
-      linear-gradient(
-        to bottom,
-        color-mix(in oklch, var(--foreground) 6%, transparent) 1px,
-        transparent 1px
-      );
-    background-size: 44px 44px;
+  /* Animated underline that grows from the left on hover. */
+  .link {
+    position: relative;
+    color: inherit;
+    text-decoration: none;
+  }
+  .link::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    bottom: -2px;
+    height: 1px;
+    width: 100%;
+    background: currentColor;
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .link:hover::after,
+  .link:focus-visible::after {
+    transform: scaleX(1);
   }
 
   .animate-float {
@@ -315,7 +409,7 @@
     background-image: linear-gradient(
       90deg,
       transparent,
-      color-mix(in oklch, var(--foreground) 8%, transparent),
+      oklch(100% 0 0 / 0.06),
       transparent
     );
     background-size: 200% 100%;
@@ -326,6 +420,57 @@
   }
   .animate-spin-slow {
     animation: spin 22s linear infinite;
+  }
+  .animate-caret {
+    animation: caret-blink 1.1s steps(2, start) infinite;
+  }
+
+  /* 3D primitives — real perspective projection via CSS transforms, on the
+     compositor, at zero KB of JavaScript. */
+  .scene-3d {
+    perspective: 1100px;
+    perspective-origin: 50% 50%;
+  }
+  .scene-3d-near {
+    perspective: 600px;
+    perspective-origin: 50% 50%;
+  }
+  .preserve-3d {
+    transform-style: preserve-3d;
+  }
+  .backface-hidden {
+    backface-visibility: hidden;
+  }
+}
+
+@keyframes sunray-sweep {
+  0% {
+    text-shadow: none;
+    background-position: 100% 0;
+  }
+  8% {
+    text-shadow: 0 0 16px color-mix(in oklch, var(--cyan) 65%, transparent);
+  }
+  18%,
+  100% {
+    text-shadow: none;
+    background-position: 0 0;
+  }
+}
+
+@keyframes marquee-drift {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
   }
 }
 

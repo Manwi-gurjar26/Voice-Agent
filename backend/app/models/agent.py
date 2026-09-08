@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 def _default_theme() -> dict[str, Any]:
     return {
-        "primaryColor": "#2F6FED",
+        "primaryColor": "#F84FCC",
         "position": "bottom-right",
         "launcherIcon": "chat",
         "bubbleRadius": 16,

@@ -53,7 +53,7 @@ describe("SignupPage", () => {
         full_name: null,
       }),
     );
-    await waitFor(() => expect(replace).toHaveBeenCalledWith("/agents"));
+    await waitFor(() => expect(replace).toHaveBeenCalledWith("/overview"));
   });
 
   it("passes a trimmed full_name when provided", async () => {

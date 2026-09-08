@@ -2,18 +2,24 @@ import { clearAuth, isAccessTokenFresh, loadAuth, storeAuth } from "./auth-stora
 import type {
   AgentCreate,
   AgentListResponse,
+  AgentPublicConfig,
   AgentRead,
   AgentUpdate,
+  AnalyticsOverview,
   ApiErrorBody,
   CheckoutSessionResponse,
+  ConversationRead,
   DocumentCreateCrawl,
   DocumentListResponse,
   LoginRequest,
+  MessageRead,
   MeResponse,
   PaidPlan,
   PortalSessionResponse,
+  PreviewStreamEvent,
   SignupRequest,
   TokenPair,
+  VoiceReplyResponse,
 } from "./types";
 
 const BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1").replace(
@@ -125,6 +131,20 @@ async function authedRequest<T>(path: string, init: RequestInit = {}): Promise<T
   }
 }
 
+/** The current access token, refreshed first if it is close to expiry.
+ * Extracted from authedRequest so the two calls that manage their own
+ * fetch (an SSE stream and a multipart upload) do not each reimplement the
+ * refresh dance. */
+async function freshAccessToken(): Promise<string> {
+  let auth = loadAuth();
+  if (!auth) throw new ApiError(401, "unauthenticated", "Not signed in.");
+  if (!isAccessTokenFresh(auth)) {
+    auth = await refreshSession();
+    if (!auth) throw new ApiError(401, "unauthenticated", "Session expired. Please sign in again.");
+  }
+  return auth.accessToken;
+}
+
 export async function signup(payload: SignupRequest): Promise<TokenPair> {
   const pair = await request<TokenPair>("/auth/signup", jsonInit("POST", payload));
   storeAuth(pair);
@@ -211,4 +231,130 @@ export function createCheckoutSession(plan: PaidPlan): Promise<CheckoutSessionRe
 
 export function createPortalSession(): Promise<PortalSessionResponse> {
   return authedRequest<PortalSessionResponse>("/billing/portal-session", { method: "POST" });
+}
+
+export function getAnalyticsOverview(days = 30): Promise<AnalyticsOverview> {
+  return authedRequest<AnalyticsOverview>(`/analytics/overview?days=${days}`);
+}
+
+/* ---------------------------------------------------------------------------
+   Agent preview.
+
+   Talks to /agents/{id}/preview/* — the dashboard-authenticated twin of the
+   widget's public endpoints. Using the public ones from here cannot work:
+   they require the caller's Origin to be on the agent's allowlist (the
+   dashboard is not, and should not be) and refuse any agent still in draft,
+   which is the state an agent is in when you most want to try it.
+--------------------------------------------------------------------------- */
+
+export function getPreviewConfig(agentId: string): Promise<AgentPublicConfig> {
+  return authedRequest<AgentPublicConfig>(`/agents/${agentId}/preview/config`);
+}
+
+export function startPreviewConversation(agentId: string): Promise<ConversationRead> {
+  return authedRequest<ConversationRead>(`/agents/${agentId}/preview/conversations`, {
+    method: "POST",
+  });
+}
+
+export function listPreviewMessages(
+  agentId: string,
+  conversationId: string,
+): Promise<{ items: MessageRead[] }> {
+  return authedRequest<{ items: MessageRead[] }>(
+    `/agents/${agentId}/preview/conversations/${conversationId}/messages`,
+  );
+}
+
+/**
+ * Parses the `event: X` / `data: Y` blocks off a streaming response — the
+ * exact format the backend's `_sse()` writes, one blank line between blocks.
+ *
+ * Native EventSource cannot be used: it is GET-only, carries no body, and
+ * cannot set an Authorization header. Partial blocks are buffered across
+ * chunk boundaries, since the blank-line separator can land anywhere relative
+ * to how the browser happens to deliver bytes.
+ */
+const BLOCK_SEPARATOR = "\n\n";
+
+async function* parseSse(response: Response): AsyncGenerator<PreviewStreamEvent> {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundary = buffer.indexOf(BLOCK_SEPARATOR);
+      while (boundary !== -1) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        let event = "";
+        let data = "";
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event: ")) event = line.slice(7);
+          else if (line.startsWith("data: ")) data = line.slice(6);
+        }
+        if (event && data) {
+          try {
+            yield { event, data: JSON.parse(data) } as PreviewStreamEvent;
+          } catch {
+            // A block that does not parse is dropped rather than aborting
+            // the stream — the turn's remaining deltas are still useful.
+          }
+        }
+        boundary = buffer.indexOf(BLOCK_SEPARATOR);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** Streams a preview reply. Bypasses `authedRequest` because that helper
+ * reads the whole body as text; here the point is to consume it
+ * incrementally. Token freshness is handled the same way, just inline. */
+export async function* sendPreviewMessage(
+  agentId: string,
+  conversationId: string,
+  content: string,
+): AsyncGenerator<PreviewStreamEvent> {
+  const token = await freshAccessToken();
+  const res = await fetch(
+    `${BASE_URL}/agents/${agentId}/preview/conversations/${conversationId}/messages`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ content }),
+    },
+  );
+  if (!res.ok) throw await errorFromResponse(res);
+  yield* parseSse(res);
+}
+
+export async function sendPreviewVoiceMessage(
+  agentId: string,
+  conversationId: string,
+  audio: Blob,
+  filename: string,
+): Promise<VoiceReplyResponse> {
+  const token = await freshAccessToken();
+  const form = new FormData();
+  form.append("file", audio, filename);
+  const res = await fetch(
+    `${BASE_URL}/agents/${agentId}/preview/conversations/${conversationId}/voice-messages`,
+    {
+      method: "POST",
+      // No explicit Content-Type: the browser sets the multipart boundary
+      // itself when the body is a FormData instance.
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    },
+  );
+  if (!res.ok) throw await errorFromResponse(res);
+  return (await res.json()) as VoiceReplyResponse;
 }
